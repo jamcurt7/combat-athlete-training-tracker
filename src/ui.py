@@ -156,6 +156,30 @@ def inject_global_styles() -> None:
             border-left-color: #94A3B8;
         }
 
+        .exercise-card-mobility,
+        .exercise-card-stretch {
+            border-left-color: #38BDF8;
+        }
+
+        .exercise-card-cardio,
+        .exercise-card-conditioning {
+            border-left-color: #FB7185;
+        }
+
+        .prescription-chip {
+            display: inline-block;
+            padding: 0.32rem 0.58rem;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 900;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+            background: rgba(0,245,212,0.10);
+            border: 1px solid rgba(0,245,212,0.26);
+            color: #5FFFEA;
+            margin-bottom: 0.45rem;
+        }
+
         .small-label {
             color: rgba(216,180,254,0.82);
             font-size: 0.75rem;
@@ -243,6 +267,24 @@ def inject_global_styles() -> None:
             margin: 0.75rem 0 1rem 0;
         }
 
+        .metadata-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.45rem;
+            margin-top: 0.45rem;
+            margin-bottom: 0.65rem;
+        }
+
+        .metadata-pill {
+            background: rgba(255,255,255,0.045);
+            border: 1px solid rgba(255,255,255,0.08);
+            color: rgba(248,250,252,0.86);
+            padding: 0.28rem 0.55rem;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 700;
+        }
+
         @media (max-width: 768px) {
             .block-container {
                 padding-top: 1rem;
@@ -261,6 +303,10 @@ def inject_global_styles() -> None:
 
             .command-card h3 {
                 font-size: 1.3rem;
+            }
+
+            .exercise-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
             }
         }
         </style>
@@ -442,40 +488,176 @@ def step_navigation(active_step: int) -> None:
                 st.rerun()
 
 
+def get_prescription_type(exercise: dict) -> str:
+    explicit_type = exercise.get("prescription_type")
+
+    if explicit_type:
+        return str(explicit_type)
+
+    category = str(exercise.get("exercise_category", "")).lower()
+    movement = str(exercise.get("movement_pattern", "")).lower()
+    name = str(exercise.get("exercise_name", "")).lower()
+
+    if "stretch" in category or "stretch" in movement or "stretch" in name:
+        return "stretch"
+
+    if "mobility" in category or "mobility" in movement or "mobility" in name:
+        return "mobility"
+
+    if "conditioning" in category or "cardio" in category or "conditioning" in movement:
+        return "cardio"
+
+    if "carry" in movement or "carry" in name:
+        return "carry"
+
+    if exercise.get("planned_weight", 0) and float(exercise.get("planned_weight", 0)) > 0:
+        return "strength"
+
+    if "pull-up" in name or "chin-up" in name or "push-up" in name:
+        return "bodyweight"
+
+    return "strength"
+
+
+def prescription_label(prescription_type: str) -> str:
+    label_map = {
+        "strength": "Strength",
+        "bodyweight": "Bodyweight",
+        "carry": "Carry / Grip",
+        "mobility": "Mobility",
+        "stretch": "Stretch",
+        "cardio": "Cardio",
+        "conditioning": "Conditioning",
+        "recovery": "Recovery",
+    }
+
+    return label_map.get(prescription_type, prescription_type.title())
+
+
+def get_exercise_stat_blocks(exercise: dict) -> list[tuple[str, str]]:
+    prescription_type = get_prescription_type(exercise)
+
+    sets = exercise.get("planned_sets", 1)
+    reps_min = exercise.get("planned_reps_min", 0)
+    reps_max = exercise.get("planned_reps_max", 0)
+    planned_weight = float(exercise.get("planned_weight") or 0)
+    target_rpe = exercise.get("target_rpe", "")
+    duration = exercise.get("duration_minutes")
+    hold_seconds = exercise.get("hold_seconds")
+    distance = exercise.get("distance")
+    heart_rate_target = exercise.get("heart_rate_target")
+    intensity_target = exercise.get("intensity_target")
+
+    if prescription_type == "cardio":
+        return [
+            ("Duration", f"{duration or reps_min}-{duration or reps_max} min"),
+            ("Target", heart_rate_target or intensity_target or f"RPE {target_rpe}"),
+            ("Mode", exercise.get("movement_pattern", "cardio")),
+            ("Effort", f"RPE {target_rpe}"),
+        ]
+
+    if prescription_type == "conditioning":
+        return [
+            ("Rounds", str(sets)),
+            ("Work", f"{reps_min}-{reps_max}"),
+            ("Target", intensity_target or f"RPE {target_rpe}"),
+            ("Effort", f"RPE {target_rpe}"),
+        ]
+
+    if prescription_type == "mobility":
+        return [
+            ("Rounds", str(sets)),
+            ("Time/Reps", f"{reps_min}-{reps_max}"),
+            ("Intensity", intensity_target or "Easy"),
+            ("RPE", str(target_rpe)),
+        ]
+
+    if prescription_type == "stretch":
+        return [
+            ("Rounds", str(sets)),
+            ("Hold", f"{hold_seconds or reps_min}-{hold_seconds or reps_max} sec"),
+            ("Side", exercise.get("side", "each side")),
+            ("Intensity", intensity_target or "Easy-moderate"),
+        ]
+
+    if prescription_type == "carry":
+        load_text = f"{planned_weight} lb" if planned_weight > 0 else "Choose load"
+        return [
+            ("Sets", str(sets)),
+            ("Distance/Time", distance or f"{reps_min}-{reps_max} sec"),
+            ("Load", load_text),
+            ("RPE", str(target_rpe)),
+        ]
+
+    if prescription_type == "bodyweight":
+        return [
+            ("Sets", str(sets)),
+            ("Reps", f"{reps_min}-{reps_max}"),
+            ("Load", "Bodyweight"),
+            ("RPE", str(target_rpe)),
+        ]
+
+    load_text = f"{planned_weight} lb" if planned_weight > 0 else "RPE-based"
+
+    return [
+        ("Sets", str(sets)),
+        ("Reps", f"{reps_min}-{reps_max}"),
+        ("Load", load_text),
+        ("RPE", str(target_rpe)),
+    ]
+
+
+def get_metadata_pills(exercise: dict) -> list[str]:
+    pills = []
+
+    for key in [
+        "equipment",
+        "modality",
+        "fatigue_cost",
+        "combat_transfer",
+    ]:
+        value = exercise.get(key)
+        if value:
+            label = key.replace("_", " ").title()
+            pills.append(f"{label}: {value}")
+
+    return pills
+
+
 def compact_exercise_card(exercise: dict, index: int) -> None:
     category = exercise.get("exercise_category", "accessory")
     safe_category = str(category).replace(" ", "_")
+    prescription_type = get_prescription_type(exercise)
+    stats = get_exercise_stat_blocks(exercise)
+    metadata_pills = get_metadata_pills(exercise)
 
-    load_text = (
-        f"{exercise['planned_weight']} lb"
-        if exercise["planned_weight"] and exercise["planned_weight"] > 0
-        else "RPE-based"
-    )
+    stats_html = ""
+
+    for label, value in stats:
+        stats_html += f"""
+            <div class="mini-stat">
+                <div class="mini-stat-label">{label}</div>
+                <div class="mini-stat-value">{value}</div>
+            </div>
+        """
+
+    metadata_html = ""
+
+    if metadata_pills:
+        pill_html = "".join([f"<span class='metadata-pill'>{pill}</span>" for pill in metadata_pills])
+        metadata_html = f"<div class='metadata-row'>{pill_html}</div>"
 
     st.markdown(
         f"""
         <div class="exercise-card exercise-card-{safe_category}">
-            <div class="small-label">{exercise['movement_pattern']} · {exercise['exercise_category']}</div>
-            <h3>{index}. {exercise['exercise_name']}</h3>
-            <div style="display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.6rem; margin: 0.75rem 0;">
-                <div class="mini-stat">
-                    <div class="mini-stat-label">Sets</div>
-                    <div class="mini-stat-value">{exercise['planned_sets']}</div>
-                </div>
-                <div class="mini-stat">
-                    <div class="mini-stat-label">Reps</div>
-                    <div class="mini-stat-value">{exercise['planned_reps_min']}-{exercise['planned_reps_max']}</div>
-                </div>
-                <div class="mini-stat">
-                    <div class="mini-stat-label">Load</div>
-                    <div class="mini-stat-value">{load_text}</div>
-                </div>
-                <div class="mini-stat">
-                    <div class="mini-stat-label">RPE</div>
-                    <div class="mini-stat-value">{exercise['target_rpe']}</div>
-                </div>
+            <span class="prescription-chip">{prescription_label(prescription_type)}</span>
+            <div class="small-label">{exercise.get('movement_pattern', 'movement')} · {exercise.get('exercise_category', 'exercise')}</div>
+            <h3>{index}. {exercise.get('exercise_name', 'Exercise')}</h3>
+            <div class="exercise-grid" style="display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.6rem; margin: 0.75rem 0;">
+                {stats_html}
             </div>
-            <p class="muted-text">{exercise['notes']}</p>
+            {metadata_html}
+            <p class="muted-text">{exercise.get('notes', '')}</p>
         </div>
         """,
         unsafe_allow_html=True,
