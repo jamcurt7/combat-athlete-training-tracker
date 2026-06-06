@@ -18,8 +18,9 @@ from src.progression_engine import update_progression_from_workout
 from src.ui import (
     inject_global_styles,
     page_header,
-    readiness_badge,
+    readiness_panel,
     compact_exercise_card,
+    flow_indicator,
 )
 
 
@@ -30,7 +31,7 @@ init_db()
 
 page_header(
     "Start Workout",
-    "Check in, generate today's adaptive workout, then log your completed sets.",
+    "Check in, generate today’s adaptive workout, then log your completed sets.",
 )
 
 default_bodyweight = float(get_setting("current_bodyweight", 218))
@@ -44,10 +45,12 @@ checkin_tab, workout_tab, log_tab = st.tabs(
 )
 
 with checkin_tab:
+    flow_indicator(active_step=1)
+
     st.subheader("Daily Check-In")
 
     st.write(
-        "Keep this honest. The app uses these answers to decide whether today should be a push, normal, light, or recovery session."
+        "Answer honestly. The app uses this to decide whether today should be a push, normal, light, or recovery session."
     )
 
     with st.form("daily_checkin_form"):
@@ -180,6 +183,8 @@ with checkin_tab:
         st.success("Check-in saved and workout generated. Open the Generated Workout tab next.")
 
 with workout_tab:
+    flow_indicator(active_step=2)
+
     if "latest_checkin" not in st.session_state or "latest_workout" not in st.session_state:
         st.info("Complete the Daily Check-In first to generate a workout.")
     else:
@@ -187,15 +192,16 @@ with workout_tab:
         workout = st.session_state["latest_workout"]
         explanation = st.session_state["latest_readiness_explanation"]
 
-        st.subheader("Today's Readiness")
-        readiness_badge(checkin["readiness_category"], checkin["readiness_score"])
-
-        st.write(explanation)
+        readiness_panel(
+            category=checkin["readiness_category"],
+            score=checkin["readiness_score"],
+            explanation=explanation,
+            workout_type=workout["workout_type"],
+            focus=workout["focus"],
+        )
 
         if workout.get("deload"):
             st.warning("Scheduled deload logic is active for this workout.")
-
-        st.divider()
 
         st.subheader("Workout Overview")
 
@@ -242,6 +248,8 @@ with workout_tab:
             )
 
 with log_tab:
+    flow_indicator(active_step=3)
+
     if "latest_checkin" not in st.session_state or "latest_workout" not in st.session_state:
         st.info("Generate a workout first before logging sets.")
     else:
@@ -364,7 +372,8 @@ with log_tab:
             st.success(f"Workout saved. Completed sets saved: {saved_sets}")
 
         if st.session_state.get("workout_saved"):
-            st.divider()
+            flow_indicator(active_step=4)
+
             st.subheader("Progression Update")
 
             updates = st.session_state.get("progression_updates", [])
