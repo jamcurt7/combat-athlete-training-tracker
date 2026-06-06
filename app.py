@@ -36,6 +36,7 @@ primary_goal = get_setting(
     "primary_goal",
     "Cut while maintaining strength and improving conditioning",
 )
+selected_template_key = get_setting("selected_template_key", "balanced")
 
 st.divider()
 
@@ -57,6 +58,7 @@ with col4:
     st.metric("Lifting Days", "Mon / Wed / Sat")
 
 st.write(f"**Primary goal:** {primary_goal}")
+st.write(f"**Current template bias:** {selected_template_key}")
 
 st.divider()
 
