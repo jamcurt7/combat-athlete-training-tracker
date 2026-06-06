@@ -3,7 +3,11 @@ from typing import Any
 
 import pandas as pd
 
-from src.database import get_progression_state, get_completed_workout_count
+from src.database import (
+    get_progression_state,
+    get_completed_workout_count,
+    get_setting,
+)
 
 
 def get_day_name() -> str:
@@ -11,13 +15,6 @@ def get_day_name() -> str:
 
 
 def is_deload_day() -> bool:
-    """
-    Conservative deload logic:
-    every 4th completed workout becomes a deload-style day.
-
-    Since you lift 3x/week, this creates a lighter exposure roughly every 1-2 weeks,
-    but readiness still matters most.
-    """
     completed_count = get_completed_workout_count()
 
     if completed_count == 0:
@@ -84,6 +81,7 @@ def generate_workout(checkin: dict[str, Any]) -> dict[str, Any]:
     goal_today = checkin.get("goal_today", "normal")
     day_name = get_day_name()
     deload = is_deload_day()
+    template_key = get_setting("selected_template_key", "balanced")
 
     focus = determine_focus(
         day_name=day_name,
@@ -92,29 +90,39 @@ def generate_workout(checkin: dict[str, Any]) -> dict[str, Any]:
         soreness=int(checkin.get("soreness", 5)),
         combat_later_today=bool(checkin.get("combat_later_today", False)),
         deload=deload,
+        template_key=template_key,
     )
 
-    if deload and readiness_category in {"Green", "Yellow"}:
-        readiness_category_for_workout = "Orange"
+    if template_key == "recovery":
+        exercises = red_day_workout(time_available)
+        workout_type = "Recovery / Mobility"
+        reason = "Recovery template selected. The app generated a low-fatigue mobility and recovery session."
+
+    elif template_key == "accessory" and readiness_category in {"Yellow", "Orange", "Red"}:
+        exercises = accessory_day_workout(time_available)
+        workout_type = "Accessory / Hypertrophy Support"
+        reason = "Accessory template selected. The app generated lower-fatigue isolation, grip, core, and mobility work."
+
+    elif deload and readiness_category in {"Green", "Yellow"}:
         workout_type = "Deload / Light Full Body"
         reason = (
             "Scheduled conservative deload. The app reduced intensity and volume to protect recovery "
             "while keeping movement quality high."
         )
-        exercises = orange_day_workout(focus, time_available, deload=True)
+        exercises = orange_day_workout(focus, time_available, deload=True, template_key=template_key)
 
     elif readiness_category == "Green":
-        exercises = green_day_workout(focus, time_available)
+        exercises = green_day_workout(focus, time_available, template_key)
         workout_type = "Full-Body Strength"
         reason = "High readiness. The app generated a productive full-body strength session."
 
     elif readiness_category == "Yellow":
-        exercises = yellow_day_workout(focus, time_available)
+        exercises = yellow_day_workout(focus, time_available, template_key)
         workout_type = "Full-Body Strength"
         reason = "Moderate readiness. The app generated a normal full-body session."
 
     elif readiness_category == "Orange":
-        exercises = orange_day_workout(focus, time_available)
+        exercises = orange_day_workout(focus, time_available, template_key=template_key)
         workout_type = "Light / Accessory"
         reason = "Reduced readiness. The app lowered intensity and shifted toward accessories."
 
@@ -131,6 +139,7 @@ def generate_workout(checkin: dict[str, Any]) -> dict[str, Any]:
         "estimated_duration": time_available,
         "generation_reason": reason,
         "deload": deload,
+        "template_key": template_key,
         "exercises": exercises,
     }
 
@@ -142,7 +151,23 @@ def determine_focus(
     soreness: int,
     combat_later_today: bool,
     deload: bool,
+    template_key: str,
 ) -> str:
+    if template_key == "posterior_chain":
+        return "Posterior Chain / Grappling Strength"
+
+    if template_key == "upper_grip":
+        return "Upper Strength + Grip"
+
+    if template_key == "lower_strength":
+        return "Lower Strength"
+
+    if template_key == "accessory":
+        return "Accessory / Hypertrophy Support"
+
+    if template_key == "recovery":
+        return "Recovery / Mobility"
+
     if deload:
         return "Deload / Accessory Full Body"
 
@@ -192,9 +217,6 @@ def make_exercise(
 
 
 def accessory_rotation(index_seed: int) -> list[dict[str, Any]]:
-    """
-    Rotates useful accessory work for neck, forearms, grip, abs, mobility, and posterior chain.
-    """
     rotations = [
         [
             make_exercise("Farmer Carry", "carry_grip", "gpp", 3, 30, 60, 0, 7.5, "Grip, trunk, and posture."),
@@ -221,7 +243,7 @@ def accessory_rotation(index_seed: int) -> list[dict[str, Any]]:
     return rotations[index_seed % len(rotations)]
 
 
-def green_day_workout(focus: str, time_available: int) -> list[dict[str, Any]]:
+def green_day_workout(focus: str, time_available: int, template_key: str) -> list[dict[str, Any]]:
     completed_count = get_completed_workout_count()
 
     trap_load = adjust_load(get_progression_load("Trap Bar Deadlift", 300), "Green", "Trap Bar Deadlift")
@@ -229,7 +251,31 @@ def green_day_workout(focus: str, time_available: int) -> list[dict[str, Any]]:
     squat_load = adjust_load(get_progression_load("Squat", 275), "Green", "Squat")
     pullup_load = adjust_load(get_progression_load("Weighted Pull-Up", 25), "Green", "Weighted Pull-Up")
 
-    if "Lower" in focus:
+    if template_key == "posterior_chain":
+        exercises = [
+            make_exercise("Trap Bar Deadlift", "hinge", "main_lift", 4, 3, 5, trap_load, 8.0, "Main posterior-chain strength."),
+            make_exercise("Weighted Pull-Up", "vertical_pull", "main_lift", 4, 3, 6, pullup_load, 8.0, "Grappling pull strength."),
+            make_exercise("Romanian Deadlift", "hinge", "secondary_lift", 3, 6, 10, 0, 7.5, "Hamstrings and trunk."),
+            make_exercise("Chest-Supported Row", "horizontal_pull", "secondary_lift", 3, 8, 12, 0, 8.0, "Upper-back strength."),
+        ]
+
+    elif template_key == "upper_grip":
+        exercises = [
+            make_exercise("Bench Press", "horizontal_push", "main_lift", 4, 4, 6, bench_load, 8.0, "Main press."),
+            make_exercise("Weighted Pull-Up", "vertical_pull", "main_lift", 4, 3, 6, pullup_load, 8.0, "Main pull."),
+            make_exercise("Chest-Supported Row", "horizontal_pull", "secondary_lift", 3, 8, 12, 0, 8.0, "Upper back volume."),
+            make_exercise("Landmine Press", "vertical_push", "secondary_lift", 3, 6, 10, 0, 7.5, "Athletic pressing."),
+        ]
+
+    elif template_key == "lower_strength":
+        exercises = [
+            make_exercise("Squat", "squat", "main_lift", 4, 4, 6, squat_load, 8.0, "Main squat pattern."),
+            make_exercise("Trap Bar Deadlift", "hinge", "main_lift", 3, 3, 5, trap_load, 8.0, "Main hinge pattern."),
+            make_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 7.5, "Keep pressing maintained."),
+            make_exercise("Step-Up", "single_leg", "accessory", 3, 8, 12, 0, 7.5, "Single-leg strength."),
+        ]
+
+    elif "Lower" in focus:
         exercises = [
             make_exercise("Trap Bar Deadlift", "hinge", "main_lift", 4, 3, 5, trap_load, 8.0, "Strong but smooth. Leave 1-2 reps in reserve."),
             make_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 8.0, "Do not grind reps."),
@@ -256,7 +302,7 @@ def green_day_workout(focus: str, time_available: int) -> list[dict[str, Any]]:
     return trim_for_time(exercises, time_available)
 
 
-def yellow_day_workout(focus: str, time_available: int) -> list[dict[str, Any]]:
+def yellow_day_workout(focus: str, time_available: int, template_key: str) -> list[dict[str, Any]]:
     completed_count = get_completed_workout_count()
 
     trap_load = adjust_load(get_progression_load("Trap Bar Deadlift", 300), "Yellow", "Trap Bar Deadlift")
@@ -264,7 +310,31 @@ def yellow_day_workout(focus: str, time_available: int) -> list[dict[str, Any]]:
     squat_load = adjust_load(get_progression_load("Squat", 275), "Yellow", "Squat")
     pullup_load = adjust_load(get_progression_load("Weighted Pull-Up", 25), "Yellow", "Weighted Pull-Up")
 
-    if "Lower" in focus:
+    if template_key == "posterior_chain":
+        exercises = [
+            make_exercise("Trap Bar Deadlift", "hinge", "main_lift", 3, 3, 5, trap_load, 7.5, "Main hinge work."),
+            make_exercise("Pull-Up", "vertical_pull", "accessory", 3, 5, 10, 0, 8.0, "Bodyweight pulling."),
+            make_exercise("Back Extension", "posterior_chain", "accessory", 3, 10, 15, 0, 7.0, "Posterior-chain support."),
+            make_exercise("Chest-Supported Row", "horizontal_pull", "secondary_lift", 3, 8, 12, 0, 8.0, "Upper back support."),
+        ]
+
+    elif template_key == "upper_grip":
+        exercises = [
+            make_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 7.5, "Main press."),
+            make_exercise("Weighted Pull-Up", "vertical_pull", "main_lift", 3, 3, 6, pullup_load, 7.5, "Main pull."),
+            make_exercise("DB Row", "horizontal_pull", "accessory", 3, 8, 12, 0, 8.0, "Rowing volume."),
+            make_exercise("Hammer Curl", "forearm_grip", "accessory", 3, 10, 15, 0, 7.5, "Grip and arm support."),
+        ]
+
+    elif template_key == "lower_strength":
+        exercises = [
+            make_exercise("Squat", "squat", "main_lift", 3, 4, 6, squat_load, 7.5, "Main squat work."),
+            make_exercise("Trap Bar Deadlift", "hinge", "main_lift", 3, 3, 5, trap_load, 7.5, "Main hinge work."),
+            make_exercise("Step-Up", "single_leg", "accessory", 2, 8, 12, 0, 7.0, "Single-leg support."),
+            make_exercise("Dead Bug", "core", "recovery_accessory", 2, 8, 12, 0, 5.0, "Core control."),
+        ]
+
+    elif "Lower" in focus:
         exercises = [
             make_exercise("Trap Bar Deadlift", "hinge", "main_lift", 3, 3, 5, trap_load, 7.5, "Productive but conservative."),
             make_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 7.5, "Smooth reps."),
@@ -291,7 +361,12 @@ def yellow_day_workout(focus: str, time_available: int) -> list[dict[str, Any]]:
     return trim_for_time(exercises, time_available)
 
 
-def orange_day_workout(focus: str, time_available: int, deload: bool = False) -> list[dict[str, Any]]:
+def orange_day_workout(
+    focus: str,
+    time_available: int,
+    deload: bool = False,
+    template_key: str = "balanced",
+) -> list[dict[str, Any]]:
     completed_count = get_completed_workout_count()
 
     trap_load = adjust_load(get_progression_load("Trap Bar Deadlift", 300), "Orange", "Trap Bar Deadlift")
@@ -299,17 +374,39 @@ def orange_day_workout(focus: str, time_available: int, deload: bool = False) ->
 
     rpe_cap = 6.0 if deload else 6.5
 
-    exercises = [
-        make_exercise("Trap Bar Deadlift", "hinge", "main_lift", 2, 3, 5, trap_load, rpe_cap, "Technique work. Keep it easy."),
-        make_exercise("Landmine Press", "vertical_push", "secondary_lift", 3, 6, 10, 0, 7.0, "Moderate pressing without grinding."),
-        make_exercise("Chest-Supported Row", "horizontal_pull", "secondary_lift", 3, 8, 12, 0, 7.5, "Upper-back work."),
-        make_exercise("Goblet Squat", "squat", "accessory", 2, 8, 12, 0, 6.5, "Light lower-body work."),
-    ]
-
-    if "Upper" in focus:
-        exercises[0] = make_exercise("Bench Press", "horizontal_push", "main_lift", 2, 4, 6, bench_load, rpe_cap, "Easy technique pressing.")
+    if template_key == "upper_grip":
+        exercises = [
+            make_exercise("Bench Press", "horizontal_push", "main_lift", 2, 4, 6, bench_load, rpe_cap, "Easy technique pressing."),
+            make_exercise("Chest-Supported Row", "horizontal_pull", "secondary_lift", 3, 8, 12, 0, 7.0, "Upper-back volume."),
+            make_exercise("Landmine Press", "vertical_push", "secondary_lift", 2, 6, 10, 0, 7.0, "Moderate pressing."),
+            make_exercise("Hammer Curl", "forearm_grip", "accessory", 2, 10, 15, 0, 7.0, "Grip and arm work."),
+        ]
+    else:
+        exercises = [
+            make_exercise("Trap Bar Deadlift", "hinge", "main_lift", 2, 3, 5, trap_load, rpe_cap, "Technique work. Keep it easy."),
+            make_exercise("Landmine Press", "vertical_push", "secondary_lift", 3, 6, 10, 0, 7.0, "Moderate pressing without grinding."),
+            make_exercise("Chest-Supported Row", "horizontal_pull", "secondary_lift", 3, 8, 12, 0, 7.5, "Upper-back work."),
+            make_exercise("Goblet Squat", "squat", "accessory", 2, 8, 12, 0, 6.5, "Light lower-body work."),
+        ]
 
     exercises.extend(accessory_rotation(completed_count + 2))
+
+    return trim_for_time(exercises, time_available)
+
+
+def accessory_day_workout(time_available: int) -> list[dict[str, Any]]:
+    completed_count = get_completed_workout_count()
+
+    exercises = [
+        make_exercise("Landmine Press", "vertical_push", "secondary_lift", 3, 8, 12, 0, 7.0, "Athletic pressing without heavy fatigue."),
+        make_exercise("Chest-Supported Row", "horizontal_pull", "secondary_lift", 3, 8, 12, 0, 7.5, "Upper-back volume."),
+        make_exercise("Goblet Squat", "squat", "accessory", 3, 8, 12, 0, 6.5, "Light lower-body work."),
+        make_exercise("Back Extension", "posterior_chain", "accessory", 3, 10, 15, 0, 7.0, "Posterior-chain support."),
+        make_exercise("Lateral Raise", "shoulder_accessory", "accessory", 2, 12, 20, 0, 7.0, "Shoulder accessory."),
+        make_exercise("Triceps Pressdown", "arm_accessory", "accessory", 2, 10, 15, 0, 7.0, "Arm accessory."),
+    ]
+
+    exercises.extend(accessory_rotation(completed_count + 3))
 
     return trim_for_time(exercises, time_available)
 
