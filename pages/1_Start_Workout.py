@@ -1,169 +1,89 @@
 from datetime import date
+from typing import Any
 
 import pandas as pd
-import streamlit as st
 
 from src.database import (
-    init_db,
-    insert_checkin,
-    insert_workout_session,
-    insert_planned_exercise,
-    insert_completed_set,
-    mark_workout_completed,
+    get_progression_state,
+    get_completed_workout_count,
     get_setting,
 )
-from src.readiness_engine import calculate_readiness_score
-from src.workout_generator import generate_workout
-from src.progression_engine import update_progression_from_workout
-from src.ui import (
-    inject_global_styles,
-    page_header,
-    readiness_panel,
-    compact_exercise_card,
-    flow_indicator,
-)
-
-
-st.set_page_config(page_title="Start Workout", page_icon="🏋️", layout="wide")
-
-inject_global_styles()
-init_db()
 
 
 # ------------------------------------------------------------
-# Local UI helpers for this page
+# Basic helpers
 # ------------------------------------------------------------
 
-def inject_start_workout_styles():
-    st.markdown(
-        """
-        <style>
-        .workout-flow-card {
-            background: linear-gradient(135deg, rgba(18, 0, 31, 0.96), rgba(43, 0, 82, 0.88));
-            border: 1px solid rgba(0, 245, 255, 0.22);
-            border-radius: 22px;
-            padding: 1rem;
-            margin-bottom: 1rem;
-            box-shadow: 0 0 22px rgba(0, 245, 255, 0.08);
-        }
-
-        .workout-flow-title {
-            color: white;
-            font-size: 1.2rem;
-            font-weight: 800;
-            margin-bottom: 0.25rem;
-        }
-
-        .workout-flow-subtitle {
-            color: rgba(255, 255, 255, 0.68);
-            font-size: 0.9rem;
-            margin-bottom: 0;
-        }
-
-        .exercise-log-card {
-            background: rgba(8, 0, 14, 0.94);
-            border: 1px solid rgba(0, 245, 255, 0.18);
-            border-radius: 20px;
-            padding: 1rem;
-            margin-bottom: 1rem;
-        }
-
-        .exercise-log-title {
-            color: white;
-            font-size: 1.1rem;
-            font-weight: 800;
-            margin-bottom: 0.2rem;
-        }
-
-        .exercise-log-meta {
-            color: rgba(255, 255, 255, 0.62);
-            font-size: 0.85rem;
-            margin-bottom: 0.8rem;
-        }
-
-        .completed-set-pill {
-            display: inline-block;
-            background: rgba(0, 245, 255, 0.14);
-            border: 1px solid rgba(0, 245, 255, 0.35);
-            color: #00f5ff;
-            border-radius: 999px;
-            padding: 0.25rem 0.65rem;
-            font-size: 0.8rem;
-            font-weight: 700;
-            margin-bottom: 0.5rem;
-        }
-
-        .pending-set-pill {
-            display: inline-block;
-            background: rgba(255, 255, 255, 0.06);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            color: rgba(255, 255, 255, 0.75);
-            border-radius: 999px;
-            padding: 0.25rem 0.65rem;
-            font-size: 0.8rem;
-            font-weight: 700;
-            margin-bottom: 0.5rem;
-        }
-
-        div[data-testid="stButton"] button {
-            min-height: 42px;
-            border-radius: 12px;
-            font-weight: 700;
-        }
-
-        div[data-testid="stMetric"] {
-            background: rgba(255, 255, 255, 0.045);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 14px;
-            padding: 0.6rem;
-        }
-
-        @media (max-width: 768px) {
-            .block-container {
-                padding-left: 0.85rem;
-                padding-right: 0.85rem;
-                padding-top: 1rem;
-            }
-
-            .exercise-log-card {
-                padding: 0.85rem;
-            }
-
-            .workout-flow-card {
-                padding: 0.85rem;
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+def get_day_name() -> str:
+    return date.today().strftime("%A")
 
 
-def workout_flow_card(title, subtitle):
-    st.markdown(
-        f"""
-        <div class="workout-flow-card">
-            <div class="workout-flow-title">{title}</div>
-            <p class="workout-flow-subtitle">{subtitle}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+def is_deload_day() -> bool:
+    completed_count = get_completed_workout_count()
+
+    if completed_count == 0:
+        return False
+
+    return completed_count % 4 == 0
 
 
-def normalize_exercise_key(exercise_name, exercise_index):
-    clean_name = (
-        exercise_name.lower()
+def safe_float(value: Any, default: float = 0) -> float:
+    try:
+        if value is None:
+            return default
+
+        if pd.isna(value):
+            return default
+
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+
+        if pd.isna(value):
+            return default
+
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def round_to_nearest_5(weight: float) -> float:
+    if weight <= 0:
+        return 0
+
+    return round(weight / 5) * 5
+
+
+def round_to_nearest_25(weight: float) -> float:
+    if weight <= 0:
+        return 0
+
+    return round(weight / 2.5) * 2.5
+
+
+def normalize_key_text(value: str) -> str:
+    return (
+        value.lower()
+        .strip()
         .replace(" ", "_")
         .replace("-", "_")
         .replace("/", "_")
         .replace("(", "")
         .replace(")", "")
     )
-    return f"exercise_{exercise_index}_{clean_name}"
 
 
-def is_weighted_bodyweight_exercise(exercise_name):
+# ------------------------------------------------------------
+# Exercise classification
+# ------------------------------------------------------------
+
+def is_weighted_bodyweight_exercise(exercise_name: str) -> bool:
     exercise_lower = exercise_name.lower()
 
     weighted_bodyweight_terms = [
@@ -175,821 +95,943 @@ def is_weighted_bodyweight_exercise(exercise_name):
     return any(term in exercise_lower for term in weighted_bodyweight_terms)
 
 
-def format_weight_for_display(exercise_name, weight):
-    try:
-        weight = float(weight)
-    except (TypeError, ValueError):
-        return "0 lb"
+def is_bodyweight_exercise(exercise_name: str) -> bool:
+    exercise_lower = exercise_name.lower()
 
-    if is_weighted_bodyweight_exercise(exercise_name):
-        return f"+{weight:g} lb"
+    bodyweight_terms = [
+        "pull-up",
+        "pull up",
+        "chin-up",
+        "chin up",
+        "push-up",
+        "push up",
+        "dip",
+        "plank",
+        "dead bug",
+        "hip airplane",
+        "mobility flow",
+        "incline walk",
+        "neck isometric",
+    ]
 
-    return f"{weight:g} lb"
+    return any(term in exercise_lower for term in bodyweight_terms)
 
 
-def initialize_set_state(exercise, exercise_index, set_number):
-    exercise_name = exercise["exercise_name"]
-    base_key = normalize_exercise_key(exercise_name, exercise_index)
-    set_key = f"{base_key}_set_{set_number}"
+def is_small_increment_exercise(exercise_name: str) -> bool:
+    exercise_lower = exercise_name.lower()
 
-    weight_key = f"{set_key}_weight"
-    reps_key = f"{set_key}_reps"
-    rpe_key = f"{set_key}_rpe"
-    notes_key = f"{set_key}_notes"
-    completed_key = f"{set_key}_completed"
+    small_increment_terms = [
+        "weighted pull",
+        "weighted chin",
+        "weighted dip",
+        "lateral raise",
+        "curl",
+        "pressdown",
+        "wrist",
+    ]
 
-    planned_weight = exercise.get("planned_weight", 0) or 0
-    planned_reps = exercise.get("planned_reps_min", 0) or 0
-    target_rpe = exercise.get("target_rpe", 7) or 7
+    return any(term in exercise_lower for term in small_increment_terms)
 
-    if weight_key not in st.session_state:
-        st.session_state[weight_key] = float(planned_weight)
 
-    if reps_key not in st.session_state:
-        st.session_state[reps_key] = int(planned_reps)
+# ------------------------------------------------------------
+# Max / progression safety helpers
+# ------------------------------------------------------------
 
-    if rpe_key not in st.session_state:
-        st.session_state[rpe_key] = float(target_rpe)
+def get_progression_row(exercise_name: str) -> pd.Series | None:
+    progression = get_progression_state()
 
-    if notes_key not in st.session_state:
-        st.session_state[notes_key] = ""
+    if progression.empty:
+        return None
 
-    if completed_key not in st.session_state:
-        st.session_state[completed_key] = False
+    if "exercise_name" not in progression.columns:
+        return None
 
-    return {
-        "set_key": set_key,
-        "weight_key": weight_key,
-        "reps_key": reps_key,
-        "rpe_key": rpe_key,
-        "notes_key": notes_key,
-        "completed_key": completed_key,
+    exact_match = progression[progression["exercise_name"] == exercise_name]
+
+    if not exact_match.empty:
+        return exact_match.iloc[0]
+
+    normalized_target = normalize_key_text(exercise_name)
+
+    for _, row in progression.iterrows():
+        row_name = str(row.get("exercise_name", ""))
+        if normalize_key_text(row_name) == normalized_target:
+            return row
+
+    return None
+
+
+def get_progression_load(exercise_name: str, default_load: float = 0) -> float:
+    row = get_progression_row(exercise_name)
+
+    if row is None:
+        return default_load
+
+    value = row.get("next_recommended_load", default_load)
+
+    if pd.isna(value):
+        return default_load
+
+    return safe_float(value, default_load)
+
+
+def get_known_max_from_progression(exercise_name: str) -> float | None:
+    row = get_progression_row(exercise_name)
+
+    if row is None:
+        return None
+
+    possible_max_columns = [
+        "max_load",
+        "max_weight",
+        "one_rep_max",
+        "estimated_1rm",
+        "estimated_max",
+        "training_max",
+        "current_max",
+        "max",
+    ]
+
+    for column in possible_max_columns:
+        if column in row.index:
+            value = safe_float(row.get(column), 0)
+            if value > 0:
+                return value
+
+    return None
+
+
+def get_known_max_from_settings(exercise_name: str) -> float | None:
+    normalized = normalize_key_text(exercise_name)
+
+    possible_setting_keys = [
+        f"{normalized}_max",
+        f"{normalized}_1rm",
+        f"{normalized}_one_rep_max",
+        f"{normalized}_estimated_1rm",
+        f"{normalized}_training_max",
+        f"max_{normalized}",
+        f"one_rep_max_{normalized}",
+        f"estimated_1rm_{normalized}",
+        f"training_max_{normalized}",
+        f"{exercise_name}_max",
+        f"{exercise_name}_1rm",
+        f"max_{exercise_name}",
+    ]
+
+    for key in possible_setting_keys:
+        value = get_setting(key, None)
+        numeric_value = safe_float(value, 0)
+
+        if numeric_value > 0:
+            return numeric_value
+
+    return None
+
+
+def get_known_max_load(exercise_name: str) -> float | None:
+    max_from_progression = get_known_max_from_progression(exercise_name)
+
+    if max_from_progression and max_from_progression > 0:
+        return max_from_progression
+
+    max_from_settings = get_known_max_from_settings(exercise_name)
+
+    if max_from_settings and max_from_settings > 0:
+        return max_from_settings
+
+    return None
+
+
+def get_default_safety_max(exercise_name: str) -> float | None:
+    """
+    Conservative fallback caps.
+
+    These are only used if the app cannot find a user-entered max in settings
+    or progression state. They prevent obviously absurd defaults while still
+    allowing the user's stored progression data to drive normal behavior.
+    """
+
+    defaults = {
+        "bench press": 245,
+        "squat": 425,
+        "trap bar deadlift": 475,
+        "weighted pull-up": 45,
+        "weighted chin-up": 45,
     }
 
+    exercise_lower = exercise_name.lower().strip()
 
-def clear_active_workout_state():
-    keys_to_clear = []
-
-    for key in st.session_state.keys():
-        if key.startswith("exercise_"):
-            keys_to_clear.append(key)
-
-        if key in [
-            "latest_checkin",
-            "latest_checkin_id",
-            "latest_workout",
-            "latest_workout_id",
-            "latest_readiness_explanation",
-            "workout_saved",
-            "progression_updates",
-            "workout_focus_ready",
-            "workout_generation_ready",
-        ]:
-            keys_to_clear.append(key)
-
-    for key in keys_to_clear:
-        if key in st.session_state:
-            del st.session_state[key]
+    return defaults.get(exercise_lower)
 
 
-def set_adjustment_button(label, key, state_key, amount, minimum=None, maximum=None):
-    if st.button(label, key=key, use_container_width=True):
-        new_value = st.session_state[state_key] + amount
+def clamp_suggested_load(
+    exercise_name: str,
+    suggested_load: float,
+    readiness_category: str,
+) -> float:
+    """
+    Prevents unsafe or impossible suggested loads.
 
-        if minimum is not None:
-            new_value = max(minimum, new_value)
+    Standard weighted lifts:
+    - Do not suggest above known max.
 
-        if maximum is not None:
-            new_value = min(maximum, new_value)
+    Weighted bodyweight lifts:
+    - Treat the number as added weight only.
+    - Do not add bodyweight.
+    - Do not suggest above added-weight max.
+    """
 
-        st.session_state[state_key] = new_value
-        st.rerun()
+    suggested_load = safe_float(suggested_load, 0)
 
+    if suggested_load <= 0:
+        return 0
 
-def quick_set_logger(exercise, exercise_index, set_number):
-    exercise_name = exercise["exercise_name"]
-    keys = initialize_set_state(exercise, exercise_index, set_number)
+    known_max = get_known_max_load(exercise_name)
 
-    weight_key = keys["weight_key"]
-    reps_key = keys["reps_key"]
-    rpe_key = keys["rpe_key"]
-    notes_key = keys["notes_key"]
-    completed_key = keys["completed_key"]
-    set_key = keys["set_key"]
+    if known_max is None:
+        known_max = get_default_safety_max(exercise_name)
 
-    st.markdown("---")
+    if known_max is not None and known_max > 0:
+        suggested_load = min(suggested_load, known_max)
 
-    if st.session_state[completed_key]:
-        st.markdown(
-            f'<span class="completed-set-pill">Set {set_number} completed</span>',
-            unsafe_allow_html=True,
-        )
+    if is_weighted_bodyweight_exercise(exercise_name):
+        suggested_load = max(0, suggested_load)
+
+    if is_small_increment_exercise(exercise_name):
+        suggested_load = round_to_nearest_25(suggested_load)
     else:
-        st.markdown(
-            f'<span class="pending-set-pill">Set {set_number} pending</span>',
-            unsafe_allow_html=True,
-        )
+        suggested_load = round_to_nearest_5(suggested_load)
 
-    metric_col_1, metric_col_2, metric_col_3 = st.columns(3)
+    return suggested_load
 
-    with metric_col_1:
-        st.metric(
-            "Weight",
-            format_weight_for_display(exercise_name, st.session_state[weight_key]),
-        )
 
-    with metric_col_2:
-        st.metric("Reps", int(st.session_state[reps_key]))
+def adjust_load(base_load: float, readiness_category: str, exercise_name: str = "") -> float:
+    base_load = safe_float(base_load, 0)
 
-    with metric_col_3:
-        st.metric("RPE", f"{st.session_state[rpe_key]:g}")
+    if base_load <= 0:
+        return 0
 
-    weight_col_1, weight_col_2, weight_col_3, weight_col_4 = st.columns(4)
-
-    with weight_col_1:
-        set_adjustment_button(
-            "-10",
-            f"{set_key}_weight_minus_10",
-            weight_key,
-            -10,
-            minimum=0,
-        )
-
-    with weight_col_2:
-        set_adjustment_button(
-            "-5",
-            f"{set_key}_weight_minus_5",
-            weight_key,
-            -5,
-            minimum=0,
-        )
-
-    with weight_col_3:
-        set_adjustment_button(
-            "+5",
-            f"{set_key}_weight_plus_5",
-            weight_key,
-            5,
-            minimum=0,
-        )
-
-    with weight_col_4:
-        set_adjustment_button(
-            "+10",
-            f"{set_key}_weight_plus_10",
-            weight_key,
-            10,
-            minimum=0,
-        )
-
-    reps_col_1, reps_col_2, rpe_col_1, rpe_col_2 = st.columns(4)
-
-    with reps_col_1:
-        set_adjustment_button(
-            "Reps -1",
-            f"{set_key}_reps_minus_1",
-            reps_key,
-            -1,
-            minimum=0,
-        )
-
-    with reps_col_2:
-        set_adjustment_button(
-            "Reps +1",
-            f"{set_key}_reps_plus_1",
-            reps_key,
-            1,
-            minimum=0,
-        )
-
-    with rpe_col_1:
-        set_adjustment_button(
-            "RPE -0.5",
-            f"{set_key}_rpe_minus",
-            rpe_key,
-            -0.5,
-            minimum=0,
-            maximum=10,
-        )
-
-    with rpe_col_2:
-        set_adjustment_button(
-            "RPE +0.5",
-            f"{set_key}_rpe_plus",
-            rpe_key,
-            0.5,
-            minimum=0,
-            maximum=10,
-        )
-
-    with st.expander("Optional exact entry / notes", expanded=False):
-        exact_col_1, exact_col_2, exact_col_3 = st.columns(3)
-
-        with exact_col_1:
-            exact_weight = st.number_input(
-                "Exact weight",
-                min_value=0.0,
-                max_value=1000.0,
-                value=float(st.session_state[weight_key]),
-                step=2.5,
-                key=f"{set_key}_exact_weight_input",
-            )
-
-            if st.button("Use exact weight", key=f"{set_key}_use_exact_weight", use_container_width=True):
-                st.session_state[weight_key] = float(exact_weight)
-                st.rerun()
-
-        with exact_col_2:
-            exact_reps = st.number_input(
-                "Exact reps",
-                min_value=0,
-                max_value=100,
-                value=int(st.session_state[reps_key]),
-                step=1,
-                key=f"{set_key}_exact_reps_input",
-            )
-
-            if st.button("Use exact reps", key=f"{set_key}_use_exact_reps", use_container_width=True):
-                st.session_state[reps_key] = int(exact_reps)
-                st.rerun()
-
-        with exact_col_3:
-            exact_rpe = st.number_input(
-                "Exact RPE",
-                min_value=0.0,
-                max_value=10.0,
-                value=float(st.session_state[rpe_key]),
-                step=0.5,
-                key=f"{set_key}_exact_rpe_input",
-            )
-
-            if st.button("Use exact RPE", key=f"{set_key}_use_exact_rpe", use_container_width=True):
-                st.session_state[rpe_key] = float(exact_rpe)
-                st.rerun()
-
-        st.text_input(
-            "Set notes",
-            key=notes_key,
-            placeholder="Optional: pain, grip, form note, shortened rest, etc.",
-        )
-
-    if st.session_state[completed_key]:
-        if st.button("Undo Completed Set", key=f"{set_key}_undo_complete", use_container_width=True):
-            st.session_state[completed_key] = False
-            st.rerun()
+    if readiness_category == "Green":
+        multiplier = 1.00
+    elif readiness_category == "Yellow":
+        multiplier = 0.95
+    elif readiness_category == "Orange":
+        multiplier = 0.85
     else:
-        if st.button("Complete Set", key=f"{set_key}_complete", type="primary", use_container_width=True):
-            st.session_state[completed_key] = True
-            st.rerun()
+        multiplier = 0.65
+
+    adjusted = base_load * multiplier
+
+    adjusted = clamp_suggested_load(
+        exercise_name=exercise_name,
+        suggested_load=adjusted,
+        readiness_category=readiness_category,
+    )
+
+    return adjusted
+
+
+# ------------------------------------------------------------
+# Workout mode / bias helpers
+# ------------------------------------------------------------
+
+def normalize_template_key(value: str | None) -> str:
+    if not value:
+        return "balanced"
+
+    value = normalize_key_text(value)
+
+    bias_map = {
+        "mixed": "balanced",
+        "strength": "strength",
+        "hypertrophy": "accessory",
+        "grappling_transfer": "upper_grip",
+        "striking_transfer": "posterior_chain",
+        "conditioning": "conditioning",
+        "mobility_recovery": "recovery",
+        "mobility__recovery": "recovery",
+        "recovery": "recovery",
+        "balanced": "balanced",
+        "posterior_chain": "posterior_chain",
+        "upper_grip": "upper_grip",
+        "lower_strength": "lower_strength",
+        "accessory": "accessory",
+    }
+
+    return bias_map.get(value, value)
+
+
+def get_template_key_from_checkin(checkin: dict[str, Any]) -> str:
+    if checkin.get("template_key"):
+        return normalize_template_key(str(checkin.get("template_key")))
+
+    if checkin.get("training_bias"):
+        return normalize_template_key(str(checkin.get("training_bias")))
+
+    stored_template = get_setting("selected_template_key", "balanced")
+
+    return normalize_template_key(str(stored_template))
+
+
+def get_workout_mode(checkin: dict[str, Any]) -> str:
+    workout_mode = str(checkin.get("workout_mode", "Focused")).strip().title()
+
+    if workout_mode not in {"Focused", "Fun", "Chaos"}:
+        return "Focused"
+
+    return workout_mode
+
+
+def apply_workout_mode_to_reason(reason: str, workout_mode: str, readiness_category: str) -> str:
+    if workout_mode == "Focused":
+        return reason + " Focused mode selected: exercise choices prioritize progression and consistency."
+
+    if workout_mode == "Fun":
+        return reason + " Fun mode selected: the app added slightly more variety while keeping the session productive."
+
+    if workout_mode == "Chaos":
+        if readiness_category in {"Orange", "Red"}:
+            return (
+                reason
+                + " Chaos mode was selected, but readiness is reduced, so novelty is limited and intensity remains conservative."
+            )
+
+        return (
+            reason
+            + " Chaos mode selected: the app adds more novelty while keeping loading constrained by readiness."
+        )
+
+    return reason
+
+
+# ------------------------------------------------------------
+# Exercise creation helpers
+# ------------------------------------------------------------
+
+def make_exercise(
+    exercise_name: str,
+    movement_pattern: str,
+    exercise_category: str,
+    sets: int,
+    reps_min: int,
+    reps_max: int,
+    weight: float,
+    target_rpe: float,
+    notes: str,
+) -> dict[str, Any]:
+    safe_weight = safe_float(weight, 0)
+
+    safe_weight = clamp_suggested_load(
+        exercise_name=exercise_name,
+        suggested_load=safe_weight,
+        readiness_category="Green",
+    )
 
     return {
         "exercise_name": exercise_name,
-        "set_number": set_number,
-        "weight": st.session_state[weight_key],
-        "reps": st.session_state[reps_key],
-        "rpe": st.session_state[rpe_key],
-        "notes": st.session_state[notes_key],
-        "completed": st.session_state[completed_key],
+        "movement_pattern": movement_pattern,
+        "exercise_category": exercise_category,
+        "planned_sets": safe_int(sets, 0),
+        "planned_reps_min": safe_int(reps_min, 0),
+        "planned_reps_max": safe_int(reps_max, 0),
+        "planned_weight": safe_weight,
+        "target_rpe": safe_float(target_rpe, 7),
+        "notes": notes,
     }
 
 
-def render_exercise_log_card(exercise, exercise_index):
-    exercise_name = exercise["exercise_name"]
-    planned_sets = int(exercise.get("planned_sets", 0) or 0)
-    reps_min = exercise.get("planned_reps_min", 0)
-    reps_max = exercise.get("planned_reps_max", 0)
-    planned_weight = exercise.get("planned_weight", 0) or 0
-    target_rpe = exercise.get("target_rpe", 7)
-    movement_pattern = exercise.get("movement_pattern", "Movement")
-    exercise_category = exercise.get("exercise_category", "Training")
-
-    st.markdown(
-        f"""
-        <div class="exercise-log-card">
-            <div class="exercise-log-title">{exercise_index}. {exercise_name}</div>
-            <div class="exercise-log-meta">
-                Target: {planned_sets} sets x {reps_min}-{reps_max} reps · 
-                {format_weight_for_display(exercise_name, planned_weight)} · 
-                RPE {target_rpe} · {movement_pattern} · {exercise_category}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+def make_loaded_exercise(
+    exercise_name: str,
+    movement_pattern: str,
+    exercise_category: str,
+    sets: int,
+    reps_min: int,
+    reps_max: int,
+    weight: float,
+    target_rpe: float,
+    notes: str,
+    readiness_category: str,
+) -> dict[str, Any]:
+    safe_weight = clamp_suggested_load(
+        exercise_name=exercise_name,
+        suggested_load=weight,
+        readiness_category=readiness_category,
     )
 
-    action_col_1, action_col_2, action_col_3 = st.columns(3)
-
-    with action_col_1:
-        if st.button("Full Replacement", key=f"full_replace_{exercise_index}", use_container_width=True):
-            st.info("Exercise replacement is coming next. This button is now reserved for a full exercise swap.")
-
-    with action_col_2:
-        if st.button("Change Modality", key=f"modality_replace_{exercise_index}", use_container_width=True):
-            st.info("Modality replacement is coming next. Example: squat to hack squat, pull-up to pulldown.")
-
-    with action_col_3:
-        if st.button("Skip Exercise", key=f"skip_exercise_{exercise_index}", use_container_width=True):
-            skip_key = f"exercise_{exercise_index}_skipped"
-            st.session_state[skip_key] = True
-            st.warning(f"{exercise_name} marked as skipped for this session.")
-
-    skip_key = f"exercise_{exercise_index}_skipped"
-
-    if st.session_state.get(skip_key):
-        st.warning("This exercise is currently marked as skipped. No sets from it will be saved.")
-        if st.button("Undo Skip", key=f"undo_skip_{exercise_index}", use_container_width=True):
-            st.session_state[skip_key] = False
-            st.rerun()
-        return []
-
-    completed_entries = []
-
-    for set_number in range(1, planned_sets + 1):
-        set_entry = quick_set_logger(exercise, exercise_index, set_number)
-        completed_entries.append(set_entry)
-
-    return completed_entries
-
-
-def collect_completed_set_entries(workout):
-    completed_sets = []
-
-    for exercise_index, exercise in enumerate(workout["exercises"], start=1):
-        skip_key = f"exercise_{exercise_index}_skipped"
-
-        if st.session_state.get(skip_key):
-            continue
-
-        planned_sets = int(exercise.get("planned_sets", 0) or 0)
-
-        for set_number in range(1, planned_sets + 1):
-            keys = initialize_set_state(exercise, exercise_index, set_number)
-
-            if st.session_state.get(keys["completed_key"]):
-                completed_sets.append(
-                    {
-                        "exercise_name": exercise["exercise_name"],
-                        "set_number": set_number,
-                        "weight": st.session_state[keys["weight_key"]],
-                        "reps": st.session_state[keys["reps_key"]],
-                        "rpe": st.session_state[keys["rpe_key"]],
-                        "notes": st.session_state[keys["notes_key"]],
-                    }
-                )
-
-    return completed_sets
+    return {
+        "exercise_name": exercise_name,
+        "movement_pattern": movement_pattern,
+        "exercise_category": exercise_category,
+        "planned_sets": safe_int(sets, 0),
+        "planned_reps_min": safe_int(reps_min, 0),
+        "planned_reps_max": safe_int(reps_max, 0),
+        "planned_weight": safe_weight,
+        "target_rpe": safe_float(target_rpe, 7),
+        "notes": notes,
+    }
 
 
 # ------------------------------------------------------------
-# Page setup
+# Exercise rotation helpers
 # ------------------------------------------------------------
 
-inject_start_workout_styles()
+def choose_vertical_pull(
+    index_seed: int,
+    readiness_category: str,
+    prefer_weighted: bool = False,
+    workout_mode: str = "Focused",
+) -> dict[str, Any]:
+    weighted_pullup_load = adjust_load(
+        get_progression_load("Weighted Pull-Up", 25),
+        readiness_category,
+        "Weighted Pull-Up",
+    )
 
-page_header(
-    "Start Workout",
-    "Check in, choose today’s training intent, generate the workout, then log sets fast.",
-)
+    weighted_chinup_load = adjust_load(
+        get_progression_load("Weighted Chin-Up", 20),
+        readiness_category,
+        "Weighted Chin-Up",
+    )
 
-default_bodyweight = float(get_setting("current_bodyweight", 218))
+    if readiness_category in {"Orange", "Red"}:
+        options = [
+            make_exercise("Pull-Up", "vertical_pull", "accessory", 3, 5, 10, 0, 7.0, "Bodyweight pulling. Leave reps in reserve."),
+            make_exercise("Chin-Up", "vertical_pull", "accessory", 3, 5, 10, 0, 7.0, "Bodyweight pulling with more biceps emphasis."),
+            make_exercise("Lat Pulldown", "vertical_pull", "accessory", 3, 8, 12, 0, 7.0, "Controlled vertical pull with lower joint cost."),
+        ]
 
-checkin_tab, workout_tab, log_tab = st.tabs(
-    [
-        "1. Daily Check-In",
-        "2. Generated Workout",
-        "3. Log Sets",
+        return options[index_seed % len(options)]
+
+    if prefer_weighted:
+        options = [
+            make_loaded_exercise("Weighted Pull-Up", "vertical_pull", "main_lift", 4, 3, 6, weighted_pullup_load, 8.0, "Added weight only. Clean reps.", readiness_category),
+            make_loaded_exercise("Weighted Chin-Up", "vertical_pull", "main_lift", 4, 3, 6, weighted_chinup_load, 8.0, "Added weight only. Strong supinated pulling.", readiness_category),
+            make_exercise("Pull-Up", "vertical_pull", "accessory", 3, 5, 10, 0, 8.0, "Bodyweight pulling volume."),
+            make_exercise("Chin-Up", "vertical_pull", "accessory", 3, 5, 10, 0, 8.0, "Bodyweight chin-up volume."),
+        ]
+    else:
+        options = [
+            make_exercise("Pull-Up", "vertical_pull", "accessory", 3, 5, 10, 0, 8.0, "Bodyweight pulling volume."),
+            make_exercise("Chin-Up", "vertical_pull", "accessory", 3, 5, 10, 0, 8.0, "Bodyweight pulling with biceps emphasis."),
+            make_loaded_exercise("Weighted Pull-Up", "vertical_pull", "main_lift", 3, 3, 6, weighted_pullup_load, 7.5, "Added weight only. Stop before form breaks.", readiness_category),
+            make_loaded_exercise("Weighted Chin-Up", "vertical_pull", "main_lift", 3, 3, 6, weighted_chinup_load, 7.5, "Added weight only. Clean reps.", readiness_category),
+        ]
+
+    if workout_mode == "Chaos" and readiness_category in {"Green", "Yellow"}:
+        options.append(
+            make_exercise("Neutral-Grip Pull-Up", "vertical_pull", "accessory", 3, 5, 10, 0, 8.0, "Neutral grip variation for variety.")
+        )
+
+    return options[index_seed % len(options)]
+
+
+def choose_horizontal_pull(index_seed: int, workout_mode: str = "Focused") -> dict[str, Any]:
+    options = [
+        make_exercise("Chest-Supported Row", "horizontal_pull", "secondary_lift", 3, 8, 12, 0, 8.0, "Upper-back strength with low low-back fatigue."),
+        make_exercise("DB Row", "horizontal_pull", "accessory", 3, 8, 12, 0, 8.0, "One-arm row for grappling strength."),
+        make_exercise("Cable Row", "horizontal_pull", "accessory", 3, 8, 12, 0, 7.5, "Controlled upper-back volume."),
     ]
-)
+
+    if workout_mode == "Chaos":
+        options.append(
+            make_exercise("Seal Row", "horizontal_pull", "secondary_lift", 3, 8, 12, 0, 8.0, "Strict row variation for variety.")
+        )
+
+    return options[index_seed % len(options)]
+
+
+def accessory_rotation(index_seed: int, workout_mode: str = "Focused") -> list[dict[str, Any]]:
+    rotations = [
+        [
+            make_exercise("Farmer Carry", "carry_grip", "gpp", 3, 30, 60, 0, 7.5, "Grip, trunk, and posture."),
+            make_exercise("GHR Sit-Up", "core", "accessory", 2, 8, 12, 0, 7.0, "Core strength."),
+            make_exercise("Neck Isometrics", "neck", "recovery_accessory", 2, 10, 20, 0, 5.0, "Controlled neck work."),
+        ],
+        [
+            make_exercise("Suitcase Carry", "carry_grip", "gpp", 3, 30, 60, 0, 7.0, "Anti-lateral flexion and grip."),
+            make_exercise("Hanging Knee Raise", "core", "accessory", 2, 8, 12, 0, 7.0, "Abs and hip flexor control."),
+            make_exercise("Reverse Wrist Curl", "forearm_grip", "accessory", 2, 12, 20, 0, 7.0, "Forearm balance."),
+        ],
+        [
+            make_exercise("Back Extension", "posterior_chain", "accessory", 3, 10, 15, 0, 7.0, "Posterior-chain volume."),
+            make_exercise("Plank", "core", "accessory", 2, 30, 60, 0, 7.0, "Trunk stiffness."),
+            make_exercise("Hammer Curl", "forearm_grip", "accessory", 2, 10, 15, 0, 7.5, "Arm and grip support."),
+        ],
+        [
+            make_exercise("Hip Airplane", "mobility", "recovery", 2, 5, 8, 0, 4.0, "Hip control and balance."),
+            make_exercise("Dead Bug", "core", "recovery_accessory", 2, 8, 12, 0, 5.0, "Breathing and bracing."),
+            make_exercise("Wrist Curl", "forearm_grip", "accessory", 2, 12, 20, 0, 7.0, "Forearm support."),
+        ],
+    ]
+
+    selected = rotations[index_seed % len(rotations)]
+
+    if workout_mode == "Fun":
+        selected = selected + [
+            make_exercise("Sled Push", "conditioning", "gpp", 3, 20, 40, 0, 7.5, "Fun conditioning finisher if equipment is available.")
+        ]
+
+    if workout_mode == "Chaos":
+        selected = selected + [
+            make_exercise("Bear Crawl", "locomotion", "gpp", 2, 20, 40, 0, 7.0, "Controlled chaos: trunk, shoulders, and conditioning.")
+        ]
+
+    return selected
 
 
 # ------------------------------------------------------------
-# Tab 1: Daily Check-In + Workout Focus
+# Main workout generation
 # ------------------------------------------------------------
 
-with checkin_tab:
-    flow_indicator(active_step=1)
+def generate_workout(checkin: dict[str, Any]) -> dict[str, Any]:
+    readiness_category = checkin.get("readiness_category", "Yellow")
+    time_available = safe_int(checkin.get("time_available", 60), 60)
+    goal_today = checkin.get("goal_today", "normal")
+    day_name = get_day_name()
+    deload = is_deload_day()
+    template_key = get_template_key_from_checkin(checkin)
+    workout_mode = get_workout_mode(checkin)
+    training_bias = checkin.get("training_bias", template_key)
 
-    workout_flow_card(
-        "Daily Check-In",
-        "First, tell the app how ready you are. Then choose the style and bias for today’s workout.",
+    focus = determine_focus(
+        day_name=day_name,
+        readiness_category=readiness_category,
+        goal_today=goal_today,
+        soreness=safe_int(checkin.get("soreness", 5), 5),
+        combat_later_today=bool(checkin.get("combat_later_today", False)),
+        deload=deload,
+        template_key=template_key,
+        workout_mode=workout_mode,
     )
 
-    with st.form("daily_checkin_form"):
-        st.markdown("### Body & Recovery")
+    if template_key == "recovery":
+        exercises = red_day_workout(time_available, workout_mode)
+        workout_type = "Recovery / Mobility"
+        reason = "Recovery bias selected. The app generated a low-fatigue mobility and recovery session."
 
-        col1, col2 = st.columns(2)
+    elif template_key == "accessory" and readiness_category in {"Yellow", "Orange", "Red"}:
+        exercises = accessory_day_workout(time_available, workout_mode)
+        workout_type = "Accessory / Hypertrophy Support"
+        reason = "Accessory bias selected. The app generated lower-fatigue isolation, grip, core, and mobility work."
 
-        with col1:
-            bodyweight = st.number_input(
-                "Bodyweight today",
-                min_value=0.0,
-                max_value=500.0,
-                value=default_bodyweight,
-                step=0.2,
-            )
+    elif template_key == "conditioning" and readiness_category in {"Green", "Yellow"}:
+        exercises = conditioning_day_workout(time_available, readiness_category, workout_mode)
+        workout_type = "Conditioning / GPP"
+        reason = "Conditioning bias selected. The app generated a GPP-focused session."
 
-            hours_slept = st.number_input(
-                "Hours slept",
-                min_value=0.0,
-                max_value=14.0,
-                value=7.0,
-                step=0.5,
-            )
-
-            sleep_quality = st.slider("Sleep quality", 1, 10, 7)
-            energy = st.slider("Energy", 1, 10, 6)
-
-        with col2:
-            soreness = st.slider("Soreness", 1, 10, 5)
-            hydration = st.slider("Hydration", 1, 10, 6)
-            mood = st.slider("Mood", 1, 10, 6)
-            stress = st.slider("Stress", 1, 10, 5)
-
-        st.markdown("### Training Mindset")
-
-        col3, col4 = st.columns(2)
-
-        with col3:
-            motivation = st.slider("Motivation to train", 1, 10, 6)
-
-            protein_on_track = st.selectbox(
-                "Protein on track yesterday?",
-                ["yes", "unsure", "no"],
-                index=1,
-            )
-
-        with col4:
-            time_available = st.selectbox(
-                "Time available today",
-                [30, 45, 60, 75],
-                index=2,
-                help="Choose the closest option in minutes.",
-            )
-
-            goal_today = st.selectbox(
-                "Goal for today",
-                ["push", "normal", "maintain", "recovery"],
-                index=1,
-            )
-
-        st.markdown("### Combat Training Context")
-
-        col5, col6, col7 = st.columns(3)
-
-        with col5:
-            combat_last_24h = st.checkbox("BJJ/Muay Thai in last 24 hours?")
-
-        with col6:
-            hard_sparring_last_24h = st.checkbox("Hard sparring or hard rolling in last 24 hours?")
-
-        with col7:
-            combat_later_today = st.checkbox("BJJ/Muay Thai later today?")
-
-        submitted_checkin = st.form_submit_button("Save Check-In", use_container_width=True)
-
-    if submitted_checkin:
-        checkin = {
-            "date": date.today().isoformat(),
-            "bodyweight": bodyweight if bodyweight > 0 else None,
-            "hours_slept": hours_slept,
-            "sleep_quality": sleep_quality,
-            "energy": energy,
-            "mood": mood,
-            "motivation": motivation,
-            "stress": stress,
-            "soreness": soreness,
-            "combat_last_24h": combat_last_24h,
-            "hard_sparring_last_24h": hard_sparring_last_24h,
-            "combat_later_today": combat_later_today,
-            "hydration": hydration,
-            "protein_on_track": protein_on_track,
-            "time_available": time_available,
-            "goal_today": goal_today,
-        }
-
-        readiness_score, readiness_category, explanation = calculate_readiness_score(checkin)
-
-        checkin["readiness_score"] = readiness_score
-        checkin["readiness_category"] = readiness_category
-
-        checkin_id = insert_checkin(checkin)
-
-        st.session_state["latest_checkin"] = checkin
-        st.session_state["latest_checkin_id"] = checkin_id
-        st.session_state["latest_readiness_explanation"] = explanation
-        st.session_state["workout_focus_ready"] = True
-
-        if "latest_workout" in st.session_state:
-            del st.session_state["latest_workout"]
-
-        if "latest_workout_id" in st.session_state:
-            del st.session_state["latest_workout_id"]
-
-        st.success("Check-in saved. Choose your workout focus below.")
-
-    if st.session_state.get("workout_focus_ready") and "latest_checkin" in st.session_state:
-        st.divider()
-
-        checkin = st.session_state["latest_checkin"]
-        explanation = st.session_state["latest_readiness_explanation"]
-
-        readiness_panel(
-            category=checkin["readiness_category"],
-            score=checkin["readiness_score"],
-            explanation=explanation,
-            workout_type="Not generated yet",
-            focus="Choose below",
+    elif deload and readiness_category in {"Green", "Yellow"}:
+        workout_type = "Deload / Light Full Body"
+        reason = (
+            "Scheduled conservative deload. The app reduced intensity and volume to protect recovery "
+            "while keeping movement quality high."
+        )
+        exercises = orange_day_workout(
+            focus=focus,
+            time_available=time_available,
+            deload=True,
+            template_key=template_key,
+            workout_mode=workout_mode,
         )
 
-        st.markdown("### Workout Focus")
+    elif readiness_category == "Green":
+        exercises = green_day_workout(focus, time_available, template_key, workout_mode)
+        workout_type = "Full-Body Strength"
+        reason = "High readiness. The app generated a productive full-body strength session."
 
-        workout_mode = st.radio(
-            "Workout mode",
-            options=["Focused", "Fun", "Chaos"],
-            index=0,
-            horizontal=True,
-            help=(
-                "Focused = structured progression. "
-                "Fun = more variety. "
-                "Chaos = novelty, but still controlled by readiness."
-            ),
+    elif readiness_category == "Yellow":
+        exercises = yellow_day_workout(focus, time_available, template_key, workout_mode)
+        workout_type = "Full-Body Strength"
+        reason = "Moderate readiness. The app generated a normal full-body session."
+
+    elif readiness_category == "Orange":
+        exercises = orange_day_workout(
+            focus=focus,
+            time_available=time_available,
+            template_key=template_key,
+            workout_mode=workout_mode,
         )
+        workout_type = "Light / Accessory"
+        reason = "Reduced readiness. The app lowered intensity and shifted toward accessories."
 
-        training_bias = st.selectbox(
-            "Training bias today",
-            [
-                "Mixed",
-                "Strength",
-                "Hypertrophy",
-                "Grappling Transfer",
-                "Striking Transfer",
-                "Conditioning",
-                "Mobility / Recovery",
-            ],
-            index=0,
-            help="This gives the workout generator a directional bias for today.",
-        )
-
-        st.caption(
-            "Readiness still controls intensity. Chaos or Fun mode should not override a low-readiness day."
-        )
-
-        if st.button("Generate Workout", type="primary", use_container_width=True):
-            checkin["workout_mode"] = workout_mode
-            checkin["training_bias"] = training_bias
-            checkin["template_key"] = training_bias.lower().replace(" ", "_").replace("/", "").replace("__", "_")
-
-            workout = generate_workout(checkin)
-
-            workout["workout_mode"] = workout_mode
-            workout["training_bias"] = training_bias
-
-            workout_id = insert_workout_session(
-                {
-                    "date": workout["date"],
-                    "workout_type": workout["workout_type"],
-                    "focus": workout["focus"],
-                    "readiness_category": workout["readiness_category"],
-                    "estimated_duration": workout["estimated_duration"],
-                    "generation_reason": workout["generation_reason"],
-                    "completed": 0,
-                    "session_rpe": None,
-                    "notes": "",
-                }
-            )
-
-            for exercise in workout["exercises"]:
-                insert_planned_exercise(workout_id, exercise)
-
-            st.session_state["latest_checkin"] = checkin
-            st.session_state["latest_workout"] = workout
-            st.session_state["latest_workout_id"] = workout_id
-            st.session_state["workout_saved"] = False
-            st.session_state["progression_updates"] = []
-
-            st.success("Workout generated. Open the Generated Workout tab next.")
-
-
-# ------------------------------------------------------------
-# Tab 2: Generated Workout
-# ------------------------------------------------------------
-
-with workout_tab:
-    flow_indicator(active_step=2)
-
-    if "latest_checkin" not in st.session_state:
-        st.info("Complete the Daily Check-In first.")
-    elif "latest_workout" not in st.session_state:
-        st.info("Your check-in is saved. Go back to Daily Check-In and generate the workout.")
     else:
-        checkin = st.session_state["latest_checkin"]
-        workout = st.session_state["latest_workout"]
-        explanation = st.session_state["latest_readiness_explanation"]
+        exercises = red_day_workout(time_available, workout_mode)
+        workout_type = "Recovery"
+        reason = "Low readiness. The app generated a recovery-focused session."
 
-        readiness_panel(
-            category=checkin["readiness_category"],
-            score=checkin["readiness_score"],
-            explanation=explanation,
-            workout_type=workout["workout_type"],
-            focus=workout["focus"],
-        )
+    reason = apply_workout_mode_to_reason(reason, workout_mode, readiness_category)
 
-        if workout.get("deload"):
-            st.warning("Scheduled deload logic is active for this workout.")
+    return {
+        "date": date.today().isoformat(),
+        "workout_type": workout_type,
+        "focus": focus,
+        "readiness_category": readiness_category,
+        "estimated_duration": time_available,
+        "generation_reason": reason,
+        "deload": deload,
+        "template_key": template_key,
+        "training_bias": training_bias,
+        "workout_mode": workout_mode,
+        "exercises": exercises,
+    }
 
-        st.subheader("Workout Overview")
 
-        col_a, col_b, col_c = st.columns(3)
+def determine_focus(
+    day_name: str,
+    readiness_category: str,
+    goal_today: str,
+    soreness: int,
+    combat_later_today: bool,
+    deload: bool,
+    template_key: str,
+    workout_mode: str = "Focused",
+) -> str:
+    if template_key == "posterior_chain":
+        return "Posterior Chain / Grappling Strength"
 
-        with col_a:
-            st.metric("Workout Type", workout["workout_type"])
+    if template_key == "upper_grip":
+        return "Upper Strength + Grip"
 
-        with col_b:
-            st.metric("Focus", workout["focus"])
+    if template_key == "lower_strength":
+        return "Lower Strength"
 
-        with col_c:
-            st.metric("Duration", f"{workout['estimated_duration']} min")
+    if template_key == "strength":
+        return "Strength Emphasis Full Body"
 
-        mode_col, bias_col = st.columns(2)
+    if template_key == "accessory":
+        return "Accessory / Hypertrophy Support"
 
-        with mode_col:
-            st.metric("Mode", workout.get("workout_mode", checkin.get("workout_mode", "Focused")))
+    if template_key == "conditioning":
+        return "Conditioning / GPP"
 
-        with bias_col:
-            st.metric("Training Bias", workout.get("training_bias", checkin.get("training_bias", "Mixed")))
+    if template_key == "recovery":
+        return "Recovery / Mobility"
 
-        st.info(workout["generation_reason"])
+    if deload:
+        return "Deload / Accessory Full Body"
 
-        if "template_key" in workout:
-            st.caption(f"Template bias: {workout['template_key']}")
-        elif "template_key" in checkin:
-            st.caption(f"Template bias: {checkin['template_key']}")
+    if readiness_category == "Red" or goal_today == "recovery":
+        return "Recovery"
 
-        st.divider()
+    if readiness_category == "Orange" or soreness >= 7:
+        return "Accessory / Light Full Body"
 
-        st.subheader("Workout Plan")
+    if combat_later_today:
+        return "Upper / Accessory Emphasis"
 
-        for index, exercise in enumerate(workout["exercises"], start=1):
-            compact_exercise_card(exercise, index)
+    if workout_mode == "Fun":
+        return "Fun Full Body / Athletic Variety"
 
-        with st.expander("Table View"):
-            workout_df = pd.DataFrame(workout["exercises"])
+    if workout_mode == "Chaos" and readiness_category in {"Green", "Yellow"}:
+        return "Chaos Full Body / Novelty GPP"
 
-            display_columns = [
-                "exercise_name",
-                "planned_sets",
-                "planned_reps_min",
-                "planned_reps_max",
-                "planned_weight",
-                "target_rpe",
-                "notes",
-            ]
+    if day_name == "Monday":
+        return "Lower Emphasis Full Body"
 
-            available_columns = [
-                column for column in display_columns if column in workout_df.columns
-            ]
+    if day_name == "Wednesday":
+        return "Upper Emphasis Full Body"
 
-            st.dataframe(
-                workout_df[available_columns],
-                use_container_width=True,
-                hide_index=True,
-            )
+    if day_name == "Saturday":
+        return "Full Body / Posterior Chain Emphasis"
 
-        st.divider()
-
-        if st.button("Go to Log Sets", type="primary", use_container_width=True):
-            st.info("Open the Log Sets tab above to start tracking your sets.")
+    return "Full Body"
 
 
 # ------------------------------------------------------------
-# Tab 3: Fast Set Logging
+# Workout templates
 # ------------------------------------------------------------
 
-with log_tab:
-    flow_indicator(active_step=3)
+def green_day_workout(
+    focus: str,
+    time_available: int,
+    template_key: str,
+    workout_mode: str = "Focused",
+) -> list[dict[str, Any]]:
+    completed_count = get_completed_workout_count()
 
-    if "latest_checkin" not in st.session_state:
-        st.info("Complete the Daily Check-In first.")
-    elif "latest_workout" not in st.session_state:
-        st.info("Generate a workout before logging sets.")
+    trap_load = adjust_load(get_progression_load("Trap Bar Deadlift", 300), "Green", "Trap Bar Deadlift")
+    bench_load = adjust_load(get_progression_load("Bench Press", 195), "Green", "Bench Press")
+    squat_load = adjust_load(get_progression_load("Squat", 275), "Green", "Squat")
+
+    vertical_pull = choose_vertical_pull(
+        index_seed=completed_count,
+        readiness_category="Green",
+        prefer_weighted=True,
+        workout_mode=workout_mode,
+    )
+
+    horizontal_pull = choose_horizontal_pull(completed_count, workout_mode)
+
+    if template_key == "posterior_chain":
+        exercises = [
+            make_loaded_exercise("Trap Bar Deadlift", "hinge", "main_lift", 4, 3, 5, trap_load, 8.0, "Main posterior-chain strength.", "Green"),
+            vertical_pull,
+            make_exercise("Romanian Deadlift", "hinge", "secondary_lift", 3, 6, 10, 0, 7.5, "Hamstrings and trunk."),
+            horizontal_pull,
+        ]
+
+    elif template_key == "upper_grip":
+        exercises = [
+            make_loaded_exercise("Bench Press", "horizontal_push", "main_lift", 4, 4, 6, bench_load, 8.0, "Main press.", "Green"),
+            vertical_pull,
+            horizontal_pull,
+            make_exercise("Landmine Press", "vertical_push", "secondary_lift", 3, 6, 10, 0, 7.5, "Athletic pressing."),
+        ]
+
+    elif template_key == "lower_strength":
+        exercises = [
+            make_loaded_exercise("Squat", "squat", "main_lift", 4, 4, 6, squat_load, 8.0, "Main squat pattern.", "Green"),
+            make_loaded_exercise("Trap Bar Deadlift", "hinge", "main_lift", 3, 3, 5, trap_load, 8.0, "Main hinge pattern.", "Green"),
+            make_loaded_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 7.5, "Keep pressing maintained.", "Green"),
+            make_exercise("Step-Up", "single_leg", "accessory", 3, 8, 12, 0, 7.5, "Single-leg strength."),
+        ]
+
+    elif template_key == "strength":
+        exercises = [
+            make_loaded_exercise("Squat", "squat", "main_lift", 3, 3, 5, squat_load, 8.0, "Primary strength squat pattern.", "Green"),
+            make_loaded_exercise("Bench Press", "horizontal_push", "main_lift", 3, 3, 5, bench_load, 8.0, "Primary strength press.", "Green"),
+            vertical_pull,
+            make_loaded_exercise("Trap Bar Deadlift", "hinge", "main_lift", 2, 3, 5, trap_load, 7.5, "Secondary hinge strength.", "Green"),
+        ]
+
+    elif "Lower" in focus:
+        exercises = [
+            make_loaded_exercise("Trap Bar Deadlift", "hinge", "main_lift", 4, 3, 5, trap_load, 8.0, "Strong but smooth. Leave 1-2 reps in reserve.", "Green"),
+            make_loaded_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 8.0, "Do not grind reps.", "Green"),
+            vertical_pull,
+            make_exercise("Split Squat", "single_leg", "accessory", 3, 8, 12, 0, 7.5, "Single-leg strength."),
+        ]
+
+    elif "Upper" in focus:
+        exercises = [
+            make_loaded_exercise("Bench Press", "horizontal_push", "main_lift", 4, 4, 6, bench_load, 8.0, "Main upper-body strength work.", "Green"),
+            vertical_pull,
+            make_loaded_exercise("Squat", "squat", "main_lift", 3, 4, 6, squat_load, 7.5, "Moderate lower work, no grinders.", "Green"),
+            horizontal_pull,
+        ]
+
     else:
-        checkin = st.session_state["latest_checkin"]
-        workout = st.session_state["latest_workout"]
-        workout_id = st.session_state["latest_workout_id"]
-        readiness_category = checkin["readiness_category"]
+        exercises = [
+            make_loaded_exercise("Squat", "squat", "main_lift", 3, 4, 6, squat_load, 8.0, "Main lower-body strength work.", "Green"),
+            make_loaded_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 8.0, "Main press.", "Green"),
+            vertical_pull,
+            make_exercise("Romanian Deadlift", "hinge", "secondary_lift", 3, 6, 10, 0, 7.5, "Posterior-chain accessory."),
+        ]
 
-        st.subheader("Fast Set Logging")
+    exercises.extend(accessory_rotation(completed_count, workout_mode))
 
-        st.write(
-            "Use the buttons during the workout. Complete only the sets you actually perform. "
-            "Skipped exercises and unfinished sets will not be saved."
+    return trim_for_time(exercises, time_available)
+
+
+def yellow_day_workout(
+    focus: str,
+    time_available: int,
+    template_key: str,
+    workout_mode: str = "Focused",
+) -> list[dict[str, Any]]:
+    completed_count = get_completed_workout_count()
+
+    trap_load = adjust_load(get_progression_load("Trap Bar Deadlift", 300), "Yellow", "Trap Bar Deadlift")
+    bench_load = adjust_load(get_progression_load("Bench Press", 195), "Yellow", "Bench Press")
+    squat_load = adjust_load(get_progression_load("Squat", 275), "Yellow", "Squat")
+
+    vertical_pull = choose_vertical_pull(
+        index_seed=completed_count + 1,
+        readiness_category="Yellow",
+        prefer_weighted=template_key in {"upper_grip", "strength"},
+        workout_mode=workout_mode,
+    )
+
+    horizontal_pull = choose_horizontal_pull(completed_count + 1, workout_mode)
+
+    if template_key == "posterior_chain":
+        exercises = [
+            make_loaded_exercise("Trap Bar Deadlift", "hinge", "main_lift", 3, 3, 5, trap_load, 7.5, "Main hinge work.", "Yellow"),
+            vertical_pull,
+            make_exercise("Back Extension", "posterior_chain", "accessory", 3, 10, 15, 0, 7.0, "Posterior-chain support."),
+            horizontal_pull,
+        ]
+
+    elif template_key == "upper_grip":
+        exercises = [
+            make_loaded_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 7.5, "Main press.", "Yellow"),
+            vertical_pull,
+            horizontal_pull,
+            make_exercise("Hammer Curl", "forearm_grip", "accessory", 3, 10, 15, 0, 7.5, "Grip and arm support."),
+        ]
+
+    elif template_key == "lower_strength":
+        exercises = [
+            make_loaded_exercise("Squat", "squat", "main_lift", 3, 4, 6, squat_load, 7.5, "Main squat work.", "Yellow"),
+            make_loaded_exercise("Trap Bar Deadlift", "hinge", "main_lift", 3, 3, 5, trap_load, 7.5, "Main hinge work.", "Yellow"),
+            make_exercise("Step-Up", "single_leg", "accessory", 2, 8, 12, 0, 7.0, "Single-leg support."),
+            make_exercise("Dead Bug", "core", "recovery_accessory", 2, 8, 12, 0, 5.0, "Core control."),
+        ]
+
+    elif template_key == "strength":
+        exercises = [
+            make_loaded_exercise("Squat", "squat", "main_lift", 3, 4, 6, squat_load, 7.5, "Controlled strength work.", "Yellow"),
+            make_loaded_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 7.5, "Controlled pressing.", "Yellow"),
+            vertical_pull,
+            make_exercise("Back Extension", "posterior_chain", "accessory", 2, 10, 15, 0, 7.0, "Posterior-chain support."),
+        ]
+
+    elif "Lower" in focus:
+        exercises = [
+            make_loaded_exercise("Trap Bar Deadlift", "hinge", "main_lift", 3, 3, 5, trap_load, 7.5, "Productive but conservative.", "Yellow"),
+            make_loaded_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 7.5, "Smooth reps.", "Yellow"),
+            vertical_pull,
+            make_exercise("Step-Up", "single_leg", "accessory", 2, 8, 12, 0, 7.0, "Moderate single-leg work."),
+        ]
+
+    elif "Upper" in focus:
+        exercises = [
+            make_loaded_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 7.5, "Main upper-body work.", "Yellow"),
+            vertical_pull,
+            make_exercise("Goblet Squat", "squat", "accessory", 3, 8, 12, 0, 7.0, "Light lower-body volume."),
+            horizontal_pull,
+        ]
+
+    else:
+        exercises = [
+            make_loaded_exercise("Squat", "squat", "main_lift", 3, 4, 6, squat_load, 7.5, "Controlled lower-body strength.", "Yellow"),
+            make_loaded_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 7.5, "Controlled pressing.", "Yellow"),
+            vertical_pull,
+            make_exercise("Back Extension", "posterior_chain", "accessory", 2, 10, 15, 0, 7.0, "Posterior-chain accessory."),
+        ]
+
+    exercises.extend(accessory_rotation(completed_count + 1, workout_mode))
+
+    return trim_for_time(exercises, time_available)
+
+
+def orange_day_workout(
+    focus: str,
+    time_available: int,
+    deload: bool = False,
+    template_key: str = "balanced",
+    workout_mode: str = "Focused",
+) -> list[dict[str, Any]]:
+    completed_count = get_completed_workout_count()
+
+    trap_load = adjust_load(get_progression_load("Trap Bar Deadlift", 300), "Orange", "Trap Bar Deadlift")
+    bench_load = adjust_load(get_progression_load("Bench Press", 195), "Orange", "Bench Press")
+
+    rpe_cap = 6.0 if deload else 6.5
+
+    vertical_pull = choose_vertical_pull(
+        index_seed=completed_count + 2,
+        readiness_category="Orange",
+        prefer_weighted=False,
+        workout_mode=workout_mode,
+    )
+
+    horizontal_pull = choose_horizontal_pull(completed_count + 2, workout_mode)
+
+    if template_key == "upper_grip":
+        exercises = [
+            make_loaded_exercise("Bench Press", "horizontal_push", "main_lift", 2, 4, 6, bench_load, rpe_cap, "Easy technique pressing.", "Orange"),
+            horizontal_pull,
+            make_exercise("Landmine Press", "vertical_push", "secondary_lift", 2, 6, 10, 0, 7.0, "Moderate pressing."),
+            make_exercise("Hammer Curl", "forearm_grip", "accessory", 2, 10, 15, 0, 7.0, "Grip and arm work."),
+        ]
+    else:
+        exercises = [
+            make_loaded_exercise("Trap Bar Deadlift", "hinge", "main_lift", 2, 3, 5, trap_load, rpe_cap, "Technique work. Keep it easy.", "Orange"),
+            make_exercise("Landmine Press", "vertical_push", "secondary_lift", 3, 6, 10, 0, 7.0, "Moderate pressing without grinding."),
+            horizontal_pull,
+            make_exercise("Goblet Squat", "squat", "accessory", 2, 8, 12, 0, 6.5, "Light lower-body work."),
+        ]
+
+    if workout_mode in {"Fun", "Chaos"}:
+        exercises.append(vertical_pull)
+
+    exercises.extend(accessory_rotation(completed_count + 2, workout_mode))
+
+    return trim_for_time(exercises, time_available)
+
+
+def accessory_day_workout(
+    time_available: int,
+    workout_mode: str = "Focused",
+) -> list[dict[str, Any]]:
+    completed_count = get_completed_workout_count()
+
+    horizontal_pull = choose_horizontal_pull(completed_count + 3, workout_mode)
+
+    exercises = [
+        make_exercise("Landmine Press", "vertical_push", "secondary_lift", 3, 8, 12, 0, 7.0, "Athletic pressing without heavy fatigue."),
+        horizontal_pull,
+        make_exercise("Goblet Squat", "squat", "accessory", 3, 8, 12, 0, 6.5, "Light lower-body work."),
+        make_exercise("Back Extension", "posterior_chain", "accessory", 3, 10, 15, 0, 7.0, "Posterior-chain support."),
+        make_exercise("Lateral Raise", "shoulder_accessory", "accessory", 2, 12, 20, 0, 7.0, "Shoulder accessory."),
+        make_exercise("Triceps Pressdown", "arm_accessory", "accessory", 2, 10, 15, 0, 7.0, "Arm accessory."),
+    ]
+
+    exercises.extend(accessory_rotation(completed_count + 3, workout_mode))
+
+    return trim_for_time(exercises, time_available)
+
+
+def conditioning_day_workout(
+    time_available: int,
+    readiness_category: str,
+    workout_mode: str = "Focused",
+) -> list[dict[str, Any]]:
+    completed_count = get_completed_workout_count()
+
+    if readiness_category == "Green":
+        target_rpe = 7.5
+    else:
+        target_rpe = 6.5
+
+    exercises = [
+        make_exercise("Sled Push", "conditioning", "gpp", 4, 20, 40, 0, target_rpe, "Powerful but controlled pushes."),
+        make_exercise("Farmer Carry", "carry_grip", "gpp", 4, 30, 60, 0, target_rpe, "Grip and trunk conditioning."),
+        make_exercise("Assault Bike Intervals", "conditioning", "gpp", 6, 10, 30, 0, target_rpe, "Short hard intervals. Stop before sloppy output."),
+        make_exercise("Dead Bug", "core", "recovery_accessory", 2, 8, 12, 0, 5.0, "Core reset."),
+    ]
+
+    if workout_mode == "Chaos":
+        exercises.append(
+            make_exercise("Bear Crawl", "locomotion", "gpp", 3, 20, 40, 0, 7.0, "Novel but controlled full-body conditioning.")
         )
 
-        all_visible_set_entries = []
+    exercises.extend(accessory_rotation(completed_count + 4, workout_mode))
 
-        for exercise_index, exercise in enumerate(workout["exercises"], start=1):
-            with st.container():
-                set_entries = render_exercise_log_card(exercise, exercise_index)
-                all_visible_set_entries.extend(set_entries)
+    return trim_for_time(exercises, time_available)
 
-        completed_set_entries = collect_completed_set_entries(workout)
 
-        st.divider()
+def red_day_workout(
+    time_available: int,
+    workout_mode: str = "Focused",
+) -> list[dict[str, Any]]:
+    exercises = [
+        make_exercise("Incline Walk", "conditioning", "recovery", 1, 10, 20, 0, 4.0, "Easy pace. Nasal breathing if possible."),
+        make_exercise("Mobility Flow", "mobility", "recovery", 1, 5, 10, 0, 3.0, "Move smoothly. Do not force range."),
+        make_exercise("Hip Airplane", "mobility", "recovery", 2, 5, 8, 0, 4.0, "Balance and hip control."),
+        make_exercise("Back Extension", "posterior_chain", "accessory", 2, 10, 15, 0, 5.0, "Very easy blood-flow work."),
+        make_exercise("Dead Bug", "core", "recovery_accessory", 2, 8, 12, 0, 4.0, "Controlled breathing and bracing."),
+        make_exercise("Neck Isometrics", "neck", "recovery_accessory", 2, 10, 20, 0, 4.0, "Light neck work."),
+        make_exercise("Reverse Wrist Curl", "forearm_grip", "accessory", 2, 12, 20, 0, 5.0, "Light forearm work."),
+    ]
 
-        completed_count = len(completed_set_entries)
-        total_planned_sets = sum(
-            int(exercise.get("planned_sets", 0) or 0)
-            for exercise in workout["exercises"]
+    if workout_mode == "Fun":
+        exercises.append(
+            make_exercise("Easy Shadowboxing", "skill_movement", "recovery", 1, 3, 5, 0, 4.0, "Light movement only. No intensity.")
         )
 
-        progress_value = 0
+    return trim_for_time(exercises, time_available)
 
-        if total_planned_sets > 0:
-            progress_value = completed_count / total_planned_sets
 
-        st.progress(progress_value)
+def trim_for_time(exercises: list[dict[str, Any]], time_available: int) -> list[dict[str, Any]]:
+    if time_available <= 30:
+        return exercises[:4]
 
-        progress_col_1, progress_col_2 = st.columns(2)
+    if time_available <= 45:
+        return exercises[:5]
 
-        with progress_col_1:
-            st.metric("Completed Sets", completed_count)
+    if time_available <= 60:
+        return exercises[:6]
 
-        with progress_col_2:
-            st.metric("Planned Sets", total_planned_sets)
-
-        st.markdown("### Finish Workout")
-
-        session_rpe = st.slider(
-            "Overall workout difficulty / session RPE",
-            1,
-            10,
-            7,
-            key="session_rpe_fast_logger",
-        )
-
-        workout_notes = st.text_area(
-            "Workout notes",
-            placeholder="Example: Felt strong, grip was tired, shortened accessories, etc.",
-            key="workout_notes_fast_logger",
-        )
-
-        save_col_1, save_col_2 = st.columns(2)
-
-        with save_col_1:
-            if st.button("Complete Workout", type="primary", use_container_width=True):
-                completed_set_entries = collect_completed_set_entries(workout)
-
-                if not completed_set_entries:
-                    st.warning("No completed sets were marked. Complete at least one set before saving.")
-                else:
-                    saved_sets = 0
-
-                    for set_entry in completed_set_entries:
-                        if int(set_entry["reps"]) > 0:
-                            insert_completed_set(workout_id, set_entry)
-                            saved_sets += 1
-
-                    mark_workout_completed(
-                        workout_id=workout_id,
-                        session_rpe=float(session_rpe),
-                        notes=workout_notes,
-                    )
-
-                    progression_updates = update_progression_from_workout(
-                        workout_id=workout_id,
-                        readiness_category=readiness_category,
-                    )
-
-                    st.session_state["workout_saved"] = True
-                    st.session_state["progression_updates"] = progression_updates
-                    st.session_state["last_saved_set_count"] = saved_sets
-
-                    st.success(f"Workout saved. Completed sets saved: {saved_sets}")
-
-        with save_col_2:
-            if st.button("Clear Active Workout", use_container_width=True):
-                clear_active_workout_state()
-                st.success("Active workout cleared.")
-                st.rerun()
-
-        if st.session_state.get("workout_saved"):
-            flow_indicator(active_step=4)
-
-            st.subheader("Progression Update")
-
-            updates = st.session_state.get("progression_updates", [])
-
-            if updates:
-                updates_df = pd.DataFrame(updates)
-                st.dataframe(updates_df, use_container_width=True, hide_index=True)
-
-                for update in updates:
-                    st.write(f"**{update['exercise_name']}**: {update['decision']}")
-            else:
-                st.info(
-                    "No main lift progression updates were made. This can happen on recovery/light days or if no main lifts were logged."
-                )
-
-            if st.button("Done — Clear Workout From View", type="primary", use_container_width=True):
-                clear_active_workout_state()
-                st.rerun()
+    return exercises
