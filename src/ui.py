@@ -434,3 +434,25 @@ def app_storage_warning() -> None:
     st.warning(
         "This app uses local SQLite storage. On Streamlit Community Cloud, use the Export Center regularly as a backup."
     )
+def nav_card(title: str, description: str, page: str, icon: str) -> None:
+    """
+    Backward-compatible navigation card for older Home.py code.
+    """
+    icon_file_map = {
+        "🏋️": "strength.svg",
+        "📊": "analytics.svg",
+        "📥": "export.svg",
+        "📋": "readiness.svg",
+        "🧠": "templates.svg",
+        "⚙️": "settings.svg",
+    }
+
+    icon_file = icon_file_map.get(icon, "strength.svg")
+
+    command_card(
+        title=title,
+        description=description,
+        page=page,
+        icon_file=icon_file,
+        button_label=f"Open {title}",
+    )
