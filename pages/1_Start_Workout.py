@@ -20,7 +20,6 @@ from src.ui import (
     page_header,
     readiness_panel,
     compact_exercise_card,
-    flow_indicator,
     step_navigation,
 )
 
@@ -110,9 +109,7 @@ page_header(
 )
 
 active_step = st.session_state["workout_flow_step"]
-
 step_navigation(active_step)
-flow_indicator(active_step=active_step)
 
 default_bodyweight = float(get_setting("current_bodyweight", 218))
 
@@ -580,8 +577,6 @@ elif active_step == 3:
                 st.rerun()
 
 elif active_step == 4:
-    flow_indicator(active_step=4)
-
     st.success("Workout saved and completed.")
 
     updates = st.session_state.get("progression_updates", [])
