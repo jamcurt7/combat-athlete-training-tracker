@@ -1,264 +1,383 @@
 from datetime import date
-from typing import Any
 
 import pandas as pd
+import streamlit as st
 
-from src.database import get_progression_state
-
-
-def get_day_name() -> str:
-    return date.today().strftime("%A")
-
-
-def get_progression_load(exercise_name: str, default_load: float = 0) -> float:
-    progression = get_progression_state()
-
-    if progression.empty:
-        return default_load
-
-    match = progression[progression["exercise_name"] == exercise_name]
-
-    if match.empty:
-        return default_load
-
-    value = match.iloc[0].get("next_recommended_load", default_load)
-
-    if pd.isna(value):
-        return default_load
-
-    return float(value)
+from src.database import (
+    init_db,
+    insert_checkin,
+    insert_workout_session,
+    insert_planned_exercise,
+    insert_completed_set,
+    mark_workout_completed,
+    get_setting,
+)
+from src.readiness_engine import calculate_readiness_score
+from src.workout_generator import generate_workout
+from src.progression_engine import update_progression_from_workout
+from src.ui import readiness_badge
 
 
-def round_to_nearest_5(weight: float) -> float:
-    if weight <= 0:
-        return 0
-    return round(weight / 5) * 5
+st.set_page_config(page_title="Start Workout", page_icon="🏋️", layout="wide")
+
+init_db()
+
+st.title("Start Workout")
+
+st.write(
+    """
+    Complete the daily check-in first. The app will generate today's workout, then let you
+    log your sets, reps, weight, and RPE.
+    """
+)
+
+st.divider()
+
+default_bodyweight = float(get_setting("current_bodyweight", 218))
+
+with st.form("daily_checkin_form"):
+    st.subheader("Daily Check-In")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        bodyweight = st.number_input(
+            "Bodyweight today, optional",
+            min_value=0.0,
+            max_value=500.0,
+            value=default_bodyweight,
+            step=0.2,
+        )
+
+        hours_slept = st.number_input(
+            "Hours slept",
+            min_value=0.0,
+            max_value=14.0,
+            value=7.0,
+            step=0.5,
+        )
+
+        sleep_quality = st.slider("Sleep quality", 1, 10, 7)
+        energy = st.slider("Energy", 1, 10, 6)
+        mood = st.slider("Mood", 1, 10, 6)
+        motivation = st.slider("Motivation to train", 1, 10, 6)
+
+    with col2:
+        stress = st.slider("Stress", 1, 10, 5)
+        soreness = st.slider("Soreness", 1, 10, 5)
+        hydration = st.slider("Hydration", 1, 10, 6)
+
+        protein_on_track = st.selectbox(
+            "Protein on track yesterday?",
+            ["yes", "unsure", "no"],
+            index=1,
+        )
+
+        time_available = st.selectbox(
+            "Time available today",
+            [30, 45, 60, 75],
+            index=2,
+            help="Choose the closest option in minutes.",
+        )
+
+        goal_today = st.selectbox(
+            "Goal for today",
+            ["push", "normal", "maintain", "recovery"],
+            index=1,
+        )
+
+    st.subheader("Combat Training Context")
+
+    col3, col4, col5 = st.columns(3)
+
+    with col3:
+        combat_last_24h = st.checkbox("BJJ/Muay Thai in last 24 hours?")
+
+    with col4:
+        hard_sparring_last_24h = st.checkbox("Hard sparring or hard rolling in last 24 hours?")
+
+    with col5:
+        combat_later_today = st.checkbox("BJJ/Muay Thai later today?")
+
+    submitted = st.form_submit_button("Generate Workout", use_container_width=True)
 
 
-def adjust_load(base_load: float, readiness_category: str) -> float:
-    if base_load <= 0:
-        return 0
+if submitted:
+    checkin = {
+        "date": date.today().isoformat(),
+        "bodyweight": bodyweight if bodyweight > 0 else None,
+        "hours_slept": hours_slept,
+        "sleep_quality": sleep_quality,
+        "energy": energy,
+        "mood": mood,
+        "motivation": motivation,
+        "stress": stress,
+        "soreness": soreness,
+        "combat_last_24h": combat_last_24h,
+        "hard_sparring_last_24h": hard_sparring_last_24h,
+        "combat_later_today": combat_later_today,
+        "hydration": hydration,
+        "protein_on_track": protein_on_track,
+        "time_available": time_available,
+        "goal_today": goal_today,
+    }
 
-    if readiness_category == "Green":
-        multiplier = 1.00
-    elif readiness_category == "Yellow":
-        multiplier = 0.95
-    elif readiness_category == "Orange":
-        multiplier = 0.85
-    else:
-        multiplier = 0.65
+    readiness_score, readiness_category, explanation = calculate_readiness_score(checkin)
 
-    return round_to_nearest_5(base_load * multiplier)
+    checkin["readiness_score"] = readiness_score
+    checkin["readiness_category"] = readiness_category
 
+    checkin_id = insert_checkin(checkin)
 
-def generate_workout(checkin: dict[str, Any]) -> dict[str, Any]:
-    readiness_category = checkin.get("readiness_category", "Yellow")
-    time_available = int(checkin.get("time_available", 60))
-    goal_today = checkin.get("goal_today", "normal")
-    day_name = get_day_name()
+    workout = generate_workout(checkin)
 
-    focus = determine_focus(
-        day_name=day_name,
-        readiness_category=readiness_category,
-        goal_today=goal_today,
-        soreness=int(checkin.get("soreness", 5)),
-        combat_later_today=bool(checkin.get("combat_later_today", False)),
+    workout_id = insert_workout_session(
+        {
+            "date": workout["date"],
+            "workout_type": workout["workout_type"],
+            "focus": workout["focus"],
+            "readiness_category": workout["readiness_category"],
+            "estimated_duration": workout["estimated_duration"],
+            "generation_reason": workout["generation_reason"],
+            "completed": 0,
+            "session_rpe": None,
+            "notes": "",
+        }
     )
 
-    if readiness_category == "Green":
-        exercises = green_day_workout(focus, time_available)
-        workout_type = "Full-Body Strength"
-        reason = "High readiness. The app generated a productive full-body strength session."
-    elif readiness_category == "Yellow":
-        exercises = yellow_day_workout(focus, time_available)
-        workout_type = "Full-Body Strength"
-        reason = "Moderate readiness. The app generated a normal full-body session."
-    elif readiness_category == "Orange":
-        exercises = orange_day_workout(focus, time_available)
-        workout_type = "Light / Accessory"
-        reason = "Reduced readiness. The app lowered intensity and shifted toward accessories."
-    else:
-        exercises = red_day_workout(time_available)
-        workout_type = "Recovery"
-        reason = "Low readiness. The app generated a recovery-focused session."
+    for exercise in workout["exercises"]:
+        insert_planned_exercise(workout_id, exercise)
 
-    return {
-        "date": date.today().isoformat(),
-        "workout_type": workout_type,
-        "focus": focus,
-        "readiness_category": readiness_category,
-        "estimated_duration": time_available,
-        "generation_reason": reason,
-        "exercises": exercises,
-    }
+    st.session_state["latest_checkin"] = checkin
+    st.session_state["latest_checkin_id"] = checkin_id
+    st.session_state["latest_workout"] = workout
+    st.session_state["latest_workout_id"] = workout_id
+    st.session_state["latest_readiness_explanation"] = explanation
+    st.session_state["workout_saved"] = False
+    st.session_state["progression_updates"] = []
+
+    st.success("Check-in saved and workout generated.")
 
 
-def determine_focus(
-    day_name: str,
-    readiness_category: str,
-    goal_today: str,
-    soreness: int,
-    combat_later_today: bool,
-) -> str:
-    if readiness_category == "Red" or goal_today == "recovery":
-        return "Recovery"
+if "latest_checkin" in st.session_state and "latest_workout" in st.session_state:
+    checkin = st.session_state["latest_checkin"]
+    workout = st.session_state["latest_workout"]
+    workout_id = st.session_state["latest_workout_id"]
+    explanation = st.session_state["latest_readiness_explanation"]
 
-    if readiness_category == "Orange" or soreness >= 7:
-        return "Accessory / Light Full Body"
+    st.divider()
 
-    if combat_later_today:
-        return "Upper / Accessory Emphasis"
+    st.subheader("Today's Readiness")
 
-    if day_name == "Monday":
-        return "Lower Emphasis Full Body"
+    readiness_category = checkin["readiness_category"]
+    readiness_score = checkin["readiness_score"]
 
-    if day_name == "Wednesday":
-        return "Upper Emphasis Full Body"
+    readiness_badge(readiness_category, readiness_score)
 
-    if day_name == "Saturday":
-        return "Full Body / Posterior Chain Emphasis"
+    st.write(explanation)
 
-    return "Full Body"
+    if workout.get("deload"):
+        st.warning("Scheduled deload logic is active for this workout.")
 
+    st.divider()
 
-def make_exercise(
-    exercise_name: str,
-    movement_pattern: str,
-    exercise_category: str,
-    sets: int,
-    reps_min: int,
-    reps_max: int,
-    weight: float,
-    target_rpe: float,
-    notes: str,
-) -> dict[str, Any]:
-    return {
-        "exercise_name": exercise_name,
-        "movement_pattern": movement_pattern,
-        "exercise_category": exercise_category,
-        "planned_sets": sets,
-        "planned_reps_min": reps_min,
-        "planned_reps_max": reps_max,
-        "planned_weight": weight,
-        "target_rpe": target_rpe,
-        "notes": notes,
-    }
+    st.subheader("Generated Workout")
 
+    col_a, col_b, col_c = st.columns(3)
 
-def green_day_workout(focus: str, time_available: int) -> list[dict[str, Any]]:
-    trap_load = adjust_load(get_progression_load("Trap Bar Deadlift", 300), "Green")
-    bench_load = adjust_load(get_progression_load("Bench Press", 195), "Green")
-    squat_load = adjust_load(get_progression_load("Squat", 275), "Green")
-    pullup_load = adjust_load(get_progression_load("Weighted Pull-Up", 25), "Green")
+    with col_a:
+        st.metric("Workout Type", workout["workout_type"])
 
-    if "Lower" in focus:
-        exercises = [
-            make_exercise("Trap Bar Deadlift", "hinge", "main_lift", 4, 3, 5, trap_load, 8.0, "Strong but smooth. Leave 1-2 reps in reserve."),
-            make_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 8.0, "Do not grind reps."),
-            make_exercise("Weighted Pull-Up", "vertical_pull", "main_lift", 3, 3, 6, pullup_load, 8.0, "Use added weight if strong today; otherwise bodyweight."),
-            make_exercise("Back Extension", "posterior_chain", "accessory", 3, 10, 15, 0, 7.5, "Controlled posterior chain volume."),
-            make_exercise("Farmer Carry", "carry_grip", "gpp", 3, 30, 60, 0, 7.5, "Distance or seconds. Strong posture."),
-            make_exercise("Neck Isometrics", "neck", "recovery_accessory", 2, 10, 20, 0, 5.0, "Easy controlled neck work."),
-        ]
-    elif "Upper" in focus:
-        exercises = [
-            make_exercise("Bench Press", "horizontal_push", "main_lift", 4, 4, 6, bench_load, 8.0, "Main upper-body strength work."),
-            make_exercise("Weighted Pull-Up", "vertical_pull", "main_lift", 4, 3, 6, pullup_load, 8.0, "Prioritize quality reps."),
-            make_exercise("Squat", "squat", "main_lift", 3, 4, 6, squat_load, 7.5, "Moderate lower work, no grinders."),
-            make_exercise("Chest-Supported Row", "horizontal_pull", "secondary_lift", 3, 8, 12, 0, 8.0, "Upper back volume for grappling."),
-            make_exercise("Lateral Raise", "shoulder_accessory", "accessory", 2, 12, 20, 0, 7.0, "Shoulder accessory work."),
-            make_exercise("Hammer Curl", "forearm_grip", "accessory", 2, 10, 15, 0, 7.5, "Arm and grip support."),
-        ]
-    else:
-        exercises = [
-            make_exercise("Squat", "squat", "main_lift", 3, 4, 6, squat_load, 8.0, "Main lower-body strength work."),
-            make_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 8.0, "Main press."),
-            make_exercise("Weighted Pull-Up", "vertical_pull", "main_lift", 3, 3, 6, pullup_load, 8.0, "Main pull."),
-            make_exercise("Romanian Deadlift", "hinge", "secondary_lift", 3, 6, 10, 0, 7.5, "Posterior-chain accessory."),
-            make_exercise("Suitcase Carry", "carry_grip", "gpp", 3, 30, 60, 0, 7.0, "Anti-lateral flexion and grip."),
-            make_exercise("GHR Sit-Up", "core", "accessory", 2, 8, 12, 0, 7.0, "Core strength."),
-        ]
+    with col_b:
+        st.metric("Focus", workout["focus"])
 
-    return trim_for_time(exercises, time_available)
+    with col_c:
+        st.metric("Estimated Duration", f"{workout['estimated_duration']} min")
 
+    st.info(workout["generation_reason"])
 
-def yellow_day_workout(focus: str, time_available: int) -> list[dict[str, Any]]:
-    trap_load = adjust_load(get_progression_load("Trap Bar Deadlift", 300), "Yellow")
-    bench_load = adjust_load(get_progression_load("Bench Press", 195), "Yellow")
-    squat_load = adjust_load(get_progression_load("Squat", 275), "Yellow")
-    pullup_load = adjust_load(get_progression_load("Weighted Pull-Up", 25), "Yellow")
+    workout_df = pd.DataFrame(workout["exercises"])
 
-    if "Lower" in focus:
-        exercises = [
-            make_exercise("Trap Bar Deadlift", "hinge", "main_lift", 3, 3, 5, trap_load, 7.5, "Productive but conservative."),
-            make_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 7.5, "Smooth reps."),
-            make_exercise("Pull-Up", "vertical_pull", "accessory", 3, 5, 10, 0, 8.0, "Bodyweight volume."),
-            make_exercise("Split Squat", "single_leg", "accessory", 2, 8, 12, 0, 7.0, "Moderate single-leg work."),
-            make_exercise("Dead Bug", "core", "recovery_accessory", 2, 8, 12, 0, 5.0, "Controlled core work."),
-        ]
-    elif "Upper" in focus:
-        exercises = [
-            make_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 7.5, "Main upper-body work."),
-            make_exercise("Pull-Up", "vertical_pull", "accessory", 3, 5, 10, 0, 8.0, "Quality pulling."),
-            make_exercise("Goblet Squat", "squat", "accessory", 3, 8, 12, 0, 7.0, "Light lower-body volume."),
-            make_exercise("Chest-Supported Row", "horizontal_pull", "secondary_lift", 3, 8, 12, 0, 8.0, "Upper-back volume."),
-            make_exercise("Triceps Pressdown", "arm_accessory", "accessory", 2, 10, 15, 0, 7.0, "Pressing support."),
-            make_exercise("Wrist Curl", "forearm_grip", "accessory", 2, 12, 20, 0, 7.0, "Forearm support."),
-        ]
-    else:
-        exercises = [
-            make_exercise("Squat", "squat", "main_lift", 3, 4, 6, squat_load, 7.5, "Controlled lower-body strength."),
-            make_exercise("Bench Press", "horizontal_push", "main_lift", 3, 4, 6, bench_load, 7.5, "Controlled pressing."),
-            make_exercise("Pull-Up", "vertical_pull", "accessory", 3, 5, 10, 0, 8.0, "Pulling volume."),
-            make_exercise("Back Extension", "posterior_chain", "accessory", 2, 10, 15, 0, 7.0, "Posterior-chain accessory."),
-            make_exercise("Plank", "core", "accessory", 2, 30, 60, 0, 7.0, "Core stability."),
-        ]
-
-    return trim_for_time(exercises, time_available)
-
-
-def orange_day_workout(focus: str, time_available: int) -> list[dict[str, Any]]:
-    trap_load = adjust_load(get_progression_load("Trap Bar Deadlift", 300), "Orange")
-    bench_load = adjust_load(get_progression_load("Bench Press", 195), "Orange")
-
-    exercises = [
-        make_exercise("Trap Bar Deadlift", "hinge", "main_lift", 2, 3, 5, trap_load, 6.5, "Technique work. Keep it easy."),
-        make_exercise("Landmine Press", "vertical_push", "secondary_lift", 3, 6, 10, 0, 7.0, "Moderate pressing without grinding."),
-        make_exercise("Chest-Supported Row", "horizontal_pull", "secondary_lift", 3, 8, 12, 0, 7.5, "Upper-back work."),
-        make_exercise("Goblet Squat", "squat", "accessory", 2, 8, 12, 0, 6.5, "Light lower-body work."),
-        make_exercise("Lateral Raise", "shoulder_accessory", "accessory", 2, 12, 20, 0, 7.0, "Accessory work."),
-        make_exercise("Hammer Curl", "forearm_grip", "accessory", 2, 10, 15, 0, 7.0, "Forearm and grip support."),
-        make_exercise("Dead Bug", "core", "recovery_accessory", 2, 8, 12, 0, 5.0, "Easy core control."),
+    display_columns = [
+        "exercise_name",
+        "planned_sets",
+        "planned_reps_min",
+        "planned_reps_max",
+        "planned_weight",
+        "target_rpe",
+        "notes",
     ]
 
-    if "Upper" in focus:
-        exercises[0] = make_exercise("Bench Press", "horizontal_push", "main_lift", 2, 4, 6, bench_load, 6.5, "Easy technique pressing.")
+    st.dataframe(
+        workout_df[display_columns],
+        use_container_width=True,
+        hide_index=True,
+    )
 
-    return trim_for_time(exercises, time_available)
+    st.divider()
+
+    st.subheader("Exercise Cards")
+
+    for index, exercise in enumerate(workout["exercises"], start=1):
+        with st.container(border=True):
+            st.markdown(f"### {index}. {exercise['exercise_name']}")
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            with c1:
+                st.metric("Sets", exercise["planned_sets"])
+
+            with c2:
+                st.metric("Reps", f"{exercise['planned_reps_min']}-{exercise['planned_reps_max']}")
+
+            with c3:
+                if exercise["planned_weight"] and exercise["planned_weight"] > 0:
+                    st.metric("Suggested Load", f"{exercise['planned_weight']} lb")
+                else:
+                    st.metric("Suggested Load", "RPE-based")
+
+            with c4:
+                st.metric("Target RPE", exercise["target_rpe"])
+
+            st.caption(f"{exercise['movement_pattern']} • {exercise['exercise_category']}")
+            st.write(exercise["notes"])
+
+    st.divider()
+
+    st.subheader("Log Completed Sets")
+
+    st.write(
+        """
+        Enter what you actually completed. For bodyweight or accessory movements,
+        leave weight at 0 if you do not want to track load.
+        """
+    )
+
+    with st.form("set_logging_form"):
+        all_set_entries = []
+
+        for exercise_index, exercise in enumerate(workout["exercises"], start=1):
+            st.markdown(f"### {exercise_index}. {exercise['exercise_name']}")
+
+            st.caption(
+                f"Target: {exercise['planned_sets']} sets x "
+                f"{exercise['planned_reps_min']}-{exercise['planned_reps_max']} reps "
+                f"@ RPE {exercise['target_rpe']}"
+            )
+
+            if exercise["planned_weight"] and exercise["planned_weight"] > 0:
+                default_weight = float(exercise["planned_weight"])
+            else:
+                default_weight = 0.0
+
+            planned_sets = int(exercise["planned_sets"])
+
+            for set_number in range(1, planned_sets + 1):
+                col_w, col_r, col_rpe, col_notes = st.columns([1, 1, 1, 2])
+
+                with col_w:
+                    weight = st.number_input(
+                        f"Weight set {set_number}",
+                        min_value=0.0,
+                        max_value=1000.0,
+                        value=default_weight,
+                        step=2.5,
+                        key=f"weight_{exercise_index}_{set_number}",
+                    )
+
+                with col_r:
+                    reps = st.number_input(
+                        f"Reps set {set_number}",
+                        min_value=0,
+                        max_value=100,
+                        value=int(exercise["planned_reps_min"]),
+                        step=1,
+                        key=f"reps_{exercise_index}_{set_number}",
+                    )
+
+                with col_rpe:
+                    rpe = st.number_input(
+                        f"RPE set {set_number}",
+                        min_value=0.0,
+                        max_value=10.0,
+                        value=float(exercise["target_rpe"]),
+                        step=0.5,
+                        key=f"rpe_{exercise_index}_{set_number}",
+                    )
+
+                with col_notes:
+                    notes = st.text_input(
+                        f"Notes set {set_number}",
+                        value="",
+                        key=f"notes_{exercise_index}_{set_number}",
+                    )
+
+                all_set_entries.append(
+                    {
+                        "exercise_name": exercise["exercise_name"],
+                        "set_number": set_number,
+                        "weight": weight,
+                        "reps": reps,
+                        "rpe": rpe,
+                        "notes": notes,
+                    }
+                )
+
+            st.divider()
+
+        session_rpe = st.slider("Overall workout difficulty / session RPE", 1, 10, 7)
+
+        workout_notes = st.text_area(
+            "Workout notes",
+            placeholder="Example: Felt strong, grip was tired, shortened accessories, etc.",
+        )
+
+        save_workout = st.form_submit_button("Save Completed Workout", use_container_width=True)
+
+    if save_workout:
+        saved_sets = 0
+
+        for set_entry in all_set_entries:
+            if int(set_entry["reps"]) > 0:
+                insert_completed_set(workout_id, set_entry)
+                saved_sets += 1
+
+        mark_workout_completed(
+            workout_id=workout_id,
+            session_rpe=float(session_rpe),
+            notes=workout_notes,
+        )
+
+        progression_updates = update_progression_from_workout(
+            workout_id=workout_id,
+            readiness_category=readiness_category,
+        )
+
+        st.session_state["workout_saved"] = True
+        st.session_state["progression_updates"] = progression_updates
+
+        st.success(f"Workout saved. Completed sets saved: {saved_sets}")
+
+    if st.session_state.get("workout_saved"):
+        st.divider()
+        st.subheader("Progression Update")
+
+        updates = st.session_state.get("progression_updates", [])
+
+        if updates:
+            updates_df = pd.DataFrame(updates)
+            st.dataframe(updates_df, use_container_width=True, hide_index=True)
+
+            for update in updates:
+                st.write(f"**{update['exercise_name']}**: {update['decision']}")
+        else:
+            st.info(
+                "No main lift progression updates were made. This can happen on recovery/light days or if no main lifts were logged."
+            )
 
 
-def red_day_workout(time_available: int) -> list[dict[str, Any]]:
-    exercises = [
-        make_exercise("Incline Walk", "conditioning", "recovery", 1, 10, 20, 0, 4.0, "Easy pace. Nasal breathing if possible."),
-        make_exercise("Mobility Flow", "mobility", "recovery", 1, 5, 10, 0, 3.0, "Move smoothly. Do not force range."),
-        make_exercise("Hip Airplane", "mobility", "recovery", 2, 5, 8, 0, 4.0, "Balance and hip control."),
-        make_exercise("Back Extension", "posterior_chain", "accessory", 2, 10, 15, 0, 5.0, "Very easy blood-flow work."),
-        make_exercise("Dead Bug", "core", "recovery_accessory", 2, 8, 12, 0, 4.0, "Controlled breathing and bracing."),
-        make_exercise("Neck Isometrics", "neck", "recovery_accessory", 2, 10, 20, 0, 4.0, "Light neck work."),
-        make_exercise("Reverse Wrist Curl", "forearm_grip", "accessory", 2, 12, 20, 0, 5.0, "Light forearm work."),
-    ]
-
-    return trim_for_time(exercises, time_available)
-
-
-def trim_for_time(exercises: list[dict[str, Any]], time_available: int) -> list[dict[str, Any]]:
-    if time_available <= 30:
-        return exercises[:4]
-
-    if time_available <= 45:
-        return exercises[:5]
-
-    if time_available <= 60:
-        return exercises[:6]
-
-    return exercises
+with st.expander("Latest check-in data"):
+    if "latest_checkin" in st.session_state:
+        st.json(st.session_state["latest_checkin"])
+    else:
+        st.write("No check-in submitted yet.")
