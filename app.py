@@ -1,6 +1,7 @@
 import streamlit as st
 
 from src.database import init_db, read_table
+from src.seed_data import seed_all
 
 
 st.set_page_config(
@@ -10,6 +11,10 @@ st.set_page_config(
 )
 
 init_db()
+
+if "seeded" not in st.session_state:
+    seed_all()
+    st.session_state.seeded = True
 
 st.title("Combat Athlete Training Tracker")
 
@@ -22,7 +27,7 @@ st.write(
     """
 )
 
-st.success("Database initialized successfully.")
+st.success("Database initialized and seed data loaded.")
 
 col1, col2, col3 = st.columns(3)
 
@@ -57,9 +62,17 @@ with st.expander("Database status"):
         checkins = read_table("daily_checkins")
         workouts = read_table("workout_sessions")
         completed_sets = read_table("completed_sets")
+        exercises = read_table("exercise_library")
+        progression = read_table("progression_state")
 
         st.write(f"Daily check-ins saved: {len(checkins)}")
         st.write(f"Workout sessions saved: {len(workouts)}")
         st.write(f"Completed sets saved: {len(completed_sets)}")
+        st.write(f"Exercises loaded: {len(exercises)}")
+        st.write(f"Progression records loaded: {len(progression)}")
+
+        st.subheader("Current Main Lift Progression")
+        st.dataframe(progression, use_container_width=True)
+
     except Exception as e:
         st.error(f"Database check failed: {e}")
