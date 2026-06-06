@@ -15,6 +15,7 @@ from src.database import (
 from src.readiness_engine import calculate_readiness_score
 from src.workout_generator import generate_workout
 from src.progression_engine import update_progression_from_workout
+from src.exercise_selector import substitute_exercise
 from src.ui import (
     inject_global_styles,
     page_header,
@@ -98,6 +99,43 @@ def adjust_reps(key: str, amount: int) -> None:
 
 def adjust_rpe(key: str, amount: float) -> None:
     st.session_state[key] = min(10.0, max(0.0, float(st.session_state.get(key, 7.0)) + amount))
+
+
+def clear_set_state_for_exercise(exercise_index: int) -> None:
+    keys_to_delete = []
+
+    for key in st.session_state.keys():
+        if key.startswith(f"active_weight_{exercise_index}_"):
+            keys_to_delete.append(key)
+        if key.startswith(f"active_reps_{exercise_index}_"):
+            keys_to_delete.append(key)
+        if key.startswith(f"active_rpe_{exercise_index}_"):
+            keys_to_delete.append(key)
+        if key.startswith(f"notes_{exercise_index}_"):
+            keys_to_delete.append(key)
+
+    for key in keys_to_delete:
+        del st.session_state[key]
+
+
+def replace_exercise(exercise_index: int, substitution_type: str) -> None:
+    workout = st.session_state["latest_workout"]
+    checkin = st.session_state["latest_checkin"]
+
+    current_exercise = workout["exercises"][exercise_index - 1]
+
+    replacement = substitute_exercise(
+        current_exercise=current_exercise,
+        substitution_type=substitution_type,
+        readiness_category=checkin["readiness_category"],
+        focus=workout["focus"],
+        workout_modifier=workout.get("workout_modifier", "normal"),
+        current_workout_exercises=workout["exercises"],
+    )
+
+    workout["exercises"][exercise_index - 1] = replacement
+    st.session_state["latest_workout"] = workout
+    clear_set_state_for_exercise(exercise_index)
 
 
 if "workout_flow_step" not in st.session_state:
@@ -268,8 +306,8 @@ if active_step == 1:
             }
         )
 
-        for exercise in workout["exercises"]:
-            insert_planned_exercise(workout_id, exercise)
+        for exercise_item in workout["exercises"]:
+            insert_planned_exercise(workout_id, exercise_item)
 
         st.session_state["latest_checkin"] = checkin
         st.session_state["latest_checkin_id"] = checkin_id
@@ -329,10 +367,27 @@ elif active_step == 2:
 
         st.subheader("Workout Plan")
 
-        for index, exercise in enumerate(workout["exercises"], start=1):
-            compact_exercise_card(exercise, index)
+        for index, exercise_item in enumerate(workout["exercises"], start=1):
+            compact_exercise_card(exercise_item, index)
 
-        st.divider()
+            sub_col1, sub_col2, sub_col3 = st.columns(3)
+
+            with sub_col1:
+                if st.button("Modality Substitute", key=f"modality_sub_{index}", use_container_width=True):
+                    replace_exercise(index, "modality")
+                    st.rerun()
+
+            with sub_col2:
+                if st.button("Full Substitute", key=f"full_sub_{index}", use_container_width=True):
+                    replace_exercise(index, "full")
+                    st.rerun()
+
+            with sub_col3:
+                if st.button("Log This Exercise", key=f"log_exercise_{index}", use_container_width=True):
+                    st.session_state["workout_flow_step"] = 3
+                    st.rerun()
+
+            st.divider()
 
         action_col1, action_col2 = st.columns(2)
 
@@ -351,16 +406,23 @@ elif active_step == 2:
 
             display_columns = [
                 "exercise_name",
+                "movement_pattern",
+                "exercise_category",
+                "prescription_type",
                 "planned_sets",
                 "planned_reps_min",
                 "planned_reps_max",
                 "planned_weight",
                 "target_rpe",
+                "equipment",
+                "modality",
                 "notes",
             ]
 
+            existing_columns = [column for column in display_columns if column in workout_df.columns]
+
             st.dataframe(
-                workout_df[display_columns],
+                workout_df[existing_columns],
                 use_container_width=True,
                 hide_index=True,
             )
@@ -386,7 +448,7 @@ elif active_step == 3:
             "Use the buttons to adjust quickly. Tap Complete Set after each finished set."
         )
 
-        total_planned_sets = sum(int(exercise["planned_sets"]) for exercise in workout["exercises"])
+        total_planned_sets = sum(int(exercise_item["planned_sets"]) for exercise_item in workout["exercises"])
         completed_count = len(st.session_state["completed_set_keys"])
 
         st.progress(
@@ -394,8 +456,8 @@ elif active_step == 3:
             text=f"{completed_count} of {total_planned_sets} planned sets completed",
         )
 
-        for exercise_index, exercise in enumerate(workout["exercises"], start=1):
-            exercise_sets = int(exercise["planned_sets"])
+        for exercise_index, exercise_item in enumerate(workout["exercises"], start=1):
+            exercise_sets = int(exercise_item["planned_sets"])
             exercise_completed = len(
                 [
                     key
@@ -407,21 +469,21 @@ elif active_step == 3:
             expanded_default = exercise_completed < exercise_sets and exercise_index <= 2
 
             with st.expander(
-                f"{exercise_index}. {exercise['exercise_name']} — "
+                f"{exercise_index}. {exercise_item['exercise_name']} — "
                 f"{exercise_completed}/{exercise_sets} sets complete",
                 expanded=expanded_default,
             ):
                 st.caption(
-                    f"Target RPE {exercise['target_rpe']} · {exercise['movement_pattern']} · {exercise['exercise_category']}"
+                    f"Target RPE {exercise_item['target_rpe']} · {exercise_item['movement_pattern']} · {exercise_item['exercise_category']}"
                 )
 
-                default_weight = float(exercise["planned_weight"] or 0)
-                default_reps = int(exercise["planned_reps_min"])
-                default_rpe = float(exercise["target_rpe"])
-                planned_sets = int(exercise["planned_sets"])
+                default_weight = float(exercise_item["planned_weight"] or 0)
+                default_reps = int(exercise_item["planned_reps_min"])
+                default_rpe = float(exercise_item["target_rpe"])
+                planned_sets = int(exercise_item["planned_sets"])
 
                 for set_number in range(1, planned_sets + 1):
-                    set_key = f"{exercise_index}_{set_number}_{exercise['exercise_name']}"
+                    set_key = f"{exercise_index}_{set_number}_{exercise_item['exercise_name']}"
 
                     st.markdown(f"### Set {set_number}")
 
@@ -517,7 +579,7 @@ elif active_step == 3:
                     with complete_col1:
                         if st.button("Complete Set", key=f"complete_{set_key}", use_container_width=True):
                             set_data = {
-                                "exercise_name": exercise["exercise_name"],
+                                "exercise_name": exercise_item["exercise_name"],
                                 "set_number": set_number,
                                 "weight": float(st.session_state[weight_key]),
                                 "reps": int(st.session_state[reps_key]),
