@@ -50,10 +50,6 @@ def inject_global_styles() -> None:
             min-height: 112px;
         }
 
-        button[data-baseweb="tab"] {
-            font-weight: 800;
-        }
-
         .home-hero {
             border-radius: 30px;
             overflow: hidden;
@@ -62,28 +58,51 @@ def inject_global_styles() -> None:
             margin-bottom: 1.25rem;
         }
 
+        .clickable-card-link {
+            text-decoration: none !important;
+            color: inherit !important;
+            display: block;
+        }
+
         .command-card {
             background:
                 radial-gradient(circle at top right, rgba(0,245,212,0.10), transparent 35%),
                 linear-gradient(135deg, rgba(33,17,56,0.98), rgba(9,5,15,0.98));
             border: 1px solid rgba(0,245,212,0.14);
             border-radius: 24px;
-            padding: 1.25rem;
-            min-height: 190px;
+            padding: 1.35rem;
+            min-height: 250px;
             box-shadow: 0 14px 38px rgba(0,0,0,0.22);
-            margin-bottom: 0.65rem;
+            margin-bottom: 0.75rem;
+            cursor: pointer;
         }
 
         .command-card:hover {
-            border-color: rgba(0,245,212,0.55);
-            box-shadow: 0 18px 48px rgba(0,245,212,0.06);
-            transform: translateY(-1px);
+            border-color: rgba(0,245,212,0.72);
+            box-shadow: 0 18px 48px rgba(0,245,212,0.08);
+            transform: translateY(-2px);
             transition: all 0.15s ease-in-out;
         }
 
         .command-card h3 {
-            margin-top: 0.65rem;
-            margin-bottom: 0.35rem;
+            margin-top: 1.4rem;
+            margin-bottom: 0.8rem;
+            color: #F8FAFC;
+            font-size: 1.55rem;
+        }
+
+        .command-card p {
+            color: rgba(216,180,254,0.86);
+            font-size: 1.02rem;
+            line-height: 1.65;
+        }
+
+        .command-card-footer {
+            color: #00F5D4;
+            font-weight: 900;
+            margin-top: 1.1rem;
+            font-size: 0.92rem;
+            letter-spacing: 0.02em;
         }
 
         .mission-card {
@@ -223,13 +242,21 @@ def inject_global_styles() -> None:
             padding: 0.85rem;
             text-align: center;
             font-weight: 800;
-            margin-bottom: 1rem;
+            margin-bottom: 0.35rem;
         }
 
         .flow-active {
             border-color: rgba(0,245,212,0.62);
             background: rgba(0,245,212,0.10);
             color: #00F5D4;
+        }
+
+        .action-panel {
+            background: linear-gradient(135deg, rgba(22,11,46,0.92), rgba(9,5,15,0.98));
+            border: 1px solid rgba(0,245,212,0.14);
+            border-radius: 20px;
+            padding: 1rem;
+            margin: 0.75rem 0 1rem 0;
         }
 
         @media (max-width: 768px) {
@@ -246,6 +273,10 @@ def inject_global_styles() -> None:
 
             .exercise-card {
                 padding: 0.95rem;
+            }
+
+            .command-card h3 {
+                font-size: 1.3rem;
             }
         }
         </style>
@@ -328,6 +359,19 @@ def readiness_panel(
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def route_for_page(page: str) -> str:
+    route_map = {
+        "pages/1_Start_Workout.py": "/Start_Workout",
+        "pages/2_Workout_History.py": "/Workout_History",
+        "pages/3_Analytics.py": "/Analytics",
+        "pages/4_Export_Center.py": "/Export_Center",
+        "pages/5_Settings.py": "/Settings",
+        "pages/6_Program_Templates.py": "/Program_Templates",
+        "Home.py": "/",
+    }
+    return route_map.get(page, "/")
+
+
 def command_card(
     title: str,
     description: str,
@@ -335,20 +379,22 @@ def command_card(
     icon_file: str,
     button_label: str,
 ) -> None:
-    icon_html = asset_img_html(icon_file, title, "50px")
+    icon_html = asset_img_html(icon_file, title, "54px")
+    route = route_for_page(page)
 
     st.markdown(
         f"""
-        <div class="command-card">
-            {icon_html}
-            <h3>{title}</h3>
-            <p class="muted-text">{description}</p>
-        </div>
+        <a href="{route}" target="_self" class="clickable-card-link">
+            <div class="command-card">
+                {icon_html}
+                <h3>{title}</h3>
+                <p>{description}</p>
+                <div class="command-card-footer">{button_label} →</div>
+            </div>
+        </a>
         """,
         unsafe_allow_html=True,
     )
-
-    st.page_link(page, label=button_label)
 
 
 def mini_stat(label: str, value: str) -> None:
@@ -388,6 +434,33 @@ def flow_indicator(active_step: int) -> None:
                 f"<div class='{class_name}'>Step {idx}<br>{labels[idx-1]}</div>",
                 unsafe_allow_html=True,
             )
+
+
+def step_navigation(active_step: int) -> None:
+    cols = st.columns(4)
+
+    with cols[0]:
+        if st.button("1. Check-In", use_container_width=True, disabled=active_step == 1):
+            st.session_state["workout_flow_step"] = 1
+            st.rerun()
+
+    with cols[1]:
+        disabled = "latest_workout" not in st.session_state
+        if st.button("2. Workout", use_container_width=True, disabled=disabled or active_step == 2):
+            st.session_state["workout_flow_step"] = 2
+            st.rerun()
+
+    with cols[2]:
+        disabled = "latest_workout" not in st.session_state
+        if st.button("3. Log Sets", use_container_width=True, disabled=disabled or active_step == 3):
+            st.session_state["workout_flow_step"] = 3
+            st.rerun()
+
+    with cols[3]:
+        disabled = not st.session_state.get("workout_saved", False)
+        if st.button("4. Complete", use_container_width=True, disabled=disabled or active_step == 4):
+            st.session_state["workout_flow_step"] = 4
+            st.rerun()
 
 
 def compact_exercise_card(exercise: dict, index: int) -> None:
@@ -430,14 +503,21 @@ def compact_exercise_card(exercise: dict, index: int) -> None:
     )
 
 
+def action_panel_start() -> None:
+    st.markdown('<div class="action-panel">', unsafe_allow_html=True)
+
+
+def action_panel_end() -> None:
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def app_storage_warning() -> None:
     st.warning(
         "This app uses local SQLite storage. On Streamlit Community Cloud, use the Export Center regularly as a backup."
     )
+
+
 def nav_card(title: str, description: str, page: str, icon: str) -> None:
-    """
-    Backward-compatible navigation card for older Home.py code.
-    """
     icon_file_map = {
         "🏋️": "strength.svg",
         "📊": "analytics.svg",
