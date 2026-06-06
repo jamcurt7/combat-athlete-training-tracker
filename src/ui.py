@@ -125,45 +125,14 @@ def inject_global_styles() -> None:
             box-shadow: 0 14px 38px rgba(0,0,0,0.22);
         }
 
-        .exercise-card {
+        .exercise-shell {
             background: linear-gradient(180deg, rgba(33,17,56,0.82), rgba(9,5,15,0.72));
-            border: 1px solid rgba(255,255,255,0.085);
-            border-left: 7px solid #00F5D4;
+            border-top: 1px solid rgba(255,255,255,0.085);
+            border-right: 1px solid rgba(255,255,255,0.085);
+            border-bottom: 1px solid rgba(255,255,255,0.085);
             border-radius: 18px;
             padding: 1.05rem 1.15rem;
             margin-bottom: 0.9rem;
-        }
-
-        .exercise-card-main_lift {
-            border-left-color: #00F5D4;
-            box-shadow: inset 0 0 0 1px rgba(0,245,212,0.06);
-        }
-
-        .exercise-card-secondary_lift {
-            border-left-color: #7C3AED;
-        }
-
-        .exercise-card-accessory {
-            border-left-color: #F59E0B;
-        }
-
-        .exercise-card-gpp {
-            border-left-color: #A78BFA;
-        }
-
-        .exercise-card-recovery,
-        .exercise-card-recovery_accessory {
-            border-left-color: #94A3B8;
-        }
-
-        .exercise-card-mobility,
-        .exercise-card-stretch {
-            border-left-color: #38BDF8;
-        }
-
-        .exercise-card-cardio,
-        .exercise-card-conditioning {
-            border-left-color: #FB7185;
         }
 
         .prescription-chip {
@@ -267,24 +236,6 @@ def inject_global_styles() -> None:
             margin: 0.75rem 0 1rem 0;
         }
 
-        .metadata-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.45rem;
-            margin-top: 0.45rem;
-            margin-bottom: 0.65rem;
-        }
-
-        .metadata-pill {
-            background: rgba(255,255,255,0.045);
-            border: 1px solid rgba(255,255,255,0.08);
-            color: rgba(248,250,252,0.86);
-            padding: 0.28rem 0.55rem;
-            border-radius: 999px;
-            font-size: 0.78rem;
-            font-weight: 700;
-        }
-
         @media (max-width: 768px) {
             .block-container {
                 padding-top: 1rem;
@@ -297,16 +248,12 @@ def inject_global_styles() -> None:
                 padding: 1rem;
             }
 
-            .exercise-card {
+            .exercise-shell {
                 padding: 0.95rem;
             }
 
             .command-card h3 {
                 font-size: 1.3rem;
-            }
-
-            .exercise-grid {
-                grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
             }
         }
         </style>
@@ -549,10 +496,11 @@ def get_exercise_stat_blocks(exercise: dict) -> list[tuple[str, str]]:
     intensity_target = exercise.get("intensity_target")
 
     if prescription_type == "cardio":
+        duration_text = f"{duration} min" if duration else f"{reps_min}-{reps_max} min"
         return [
-            ("Duration", f"{duration or reps_min}-{duration or reps_max} min"),
+            ("Duration", duration_text),
             ("Target", heart_rate_target or intensity_target or f"RPE {target_rpe}"),
-            ("Mode", exercise.get("movement_pattern", "cardio")),
+            ("Mode", str(exercise.get("modality") or exercise.get("movement_pattern") or "cardio")),
             ("Effort", f"RPE {target_rpe}"),
         ]
 
@@ -573,9 +521,10 @@ def get_exercise_stat_blocks(exercise: dict) -> list[tuple[str, str]]:
         ]
 
     if prescription_type == "stretch":
+        hold_text = f"{hold_seconds} sec" if hold_seconds else f"{reps_min}-{reps_max} sec"
         return [
             ("Rounds", str(sets)),
-            ("Hold", f"{hold_seconds or reps_min}-{hold_seconds or reps_max} sec"),
+            ("Hold", hold_text),
             ("Side", exercise.get("side", "each side")),
             ("Intensity", intensity_target or "Easy-moderate"),
         ]
@@ -626,49 +575,58 @@ def get_metadata_pills(exercise: dict) -> list[str]:
 
 def compact_exercise_card(exercise: dict, index: int) -> None:
     category = exercise.get("exercise_category", "accessory")
-    safe_category = str(category).replace(" ", "_")
     prescription_type = get_prescription_type(exercise)
     stats = get_exercise_stat_blocks(exercise)
     metadata_pills = get_metadata_pills(exercise)
 
-    stats_html = "".join(
-        [
-            f"""
-<div class="mini-stat">
-    <div class="mini-stat-label">{label}</div>
-    <div class="mini-stat-value">{value}</div>
-</div>
-"""
-            for label, value in stats
-        ]
+    category_label = str(category).replace("_", " ").title()
+    prescription = prescription_label(prescription_type)
+
+    border_color_map = {
+        "main_lift": "#00F5D4",
+        "secondary_lift": "#7C3AED",
+        "accessory": "#F59E0B",
+        "gpp": "#A78BFA",
+        "recovery": "#94A3B8",
+        "recovery_accessory": "#94A3B8",
+        "mobility": "#38BDF8",
+        "stretch": "#38BDF8",
+        "cardio": "#FB7185",
+        "conditioning": "#FB7185",
+    }
+
+    border_color = border_color_map.get(str(category), "#00F5D4")
+
+    st.markdown(
+        f"""
+        <div class="exercise-shell" style="border-left: 7px solid {border_color};">
+        """,
+        unsafe_allow_html=True,
     )
 
+    st.markdown(
+        f"""
+        <span class="prescription-chip">{prescription}</span>
+        <div class="small-label">{exercise.get("movement_pattern", "movement")} · {category_label}</div>
+        <h3>{index}. {exercise.get("exercise_name", "Exercise")}</h3>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    stat_cols = st.columns(4)
+
+    for idx, (label, value) in enumerate(stats):
+        with stat_cols[idx % 4]:
+            st.metric(label, value)
+
     if metadata_pills:
-        metadata_html = (
-            "<div class='metadata-row'>"
-            + "".join([f"<span class='metadata-pill'>{pill}</span>" for pill in metadata_pills])
-            + "</div>"
-        )
-    else:
-        metadata_html = ""
+        st.caption(" · ".join(metadata_pills))
 
-    html = f"""
-<div class="exercise-card exercise-card-{safe_category}">
-    <span class="prescription-chip">{prescription_label(prescription_type)}</span>
-    <div class="small-label">{exercise.get('movement_pattern', 'movement')} · {exercise.get('exercise_category', 'exercise')}</div>
-    <h3>{index}. {exercise.get('exercise_name', 'Exercise')}</h3>
+    notes = exercise.get("notes", "")
+    if notes:
+        st.write(notes)
 
-    <div class="exercise-grid" style="display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.6rem; margin: 0.75rem 0;">
-        {stats_html}
-    </div>
-
-    {metadata_html}
-
-    <p class="muted-text">{exercise.get('notes', '')}</p>
-</div>
-"""
-
-    st.markdown(html, unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def action_panel_start() -> None:
