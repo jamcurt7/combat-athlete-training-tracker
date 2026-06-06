@@ -1,9 +1,16 @@
 from datetime import date
 
+import pandas as pd
 import streamlit as st
 
-from src.database import init_db, insert_checkin
+from src.database import (
+    init_db,
+    insert_checkin,
+    insert_workout_session,
+    insert_planned_exercise,
+)
 from src.readiness_engine import calculate_readiness_score
+from src.workout_generator import generate_workout
 
 
 st.set_page_config(page_title="Start Workout", page_icon="🏋️", layout="wide")
@@ -85,7 +92,7 @@ with st.form("daily_checkin_form"):
     with col5:
         combat_later_today = st.checkbox("BJJ/Muay Thai later today?")
 
-    submitted = st.form_submit_button("Calculate Readiness", use_container_width=True)
+    submitted = st.form_submit_button("Generate Workout", use_container_width=True)
 
 if submitted:
     checkin = {
@@ -114,13 +121,44 @@ if submitted:
 
     checkin_id = insert_checkin(checkin)
 
+    workout = generate_workout(checkin)
+
+    workout_id = insert_workout_session(
+        {
+            "date": workout["date"],
+            "workout_type": workout["workout_type"],
+            "focus": workout["focus"],
+            "readiness_category": workout["readiness_category"],
+            "estimated_duration": workout["estimated_duration"],
+            "generation_reason": workout["generation_reason"],
+            "completed": 0,
+            "session_rpe": None,
+            "notes": "",
+        }
+    )
+
+    for exercise in workout["exercises"]:
+        insert_planned_exercise(workout_id, exercise)
+
     st.session_state["latest_checkin"] = checkin
     st.session_state["latest_checkin_id"] = checkin_id
+    st.session_state["latest_workout"] = workout
+    st.session_state["latest_workout_id"] = workout_id
     st.session_state["latest_readiness_explanation"] = explanation
 
-    st.success("Check-in saved.")
+    st.success("Check-in saved and workout generated.")
+
+if "latest_checkin" in st.session_state and "latest_workout" in st.session_state:
+    checkin = st.session_state["latest_checkin"]
+    workout = st.session_state["latest_workout"]
+    explanation = st.session_state["latest_readiness_explanation"]
+
+    st.divider()
 
     st.subheader("Today's Readiness")
+
+    readiness_category = checkin["readiness_category"]
+    readiness_score = checkin["readiness_score"]
 
     if readiness_category == "Green":
         st.success(f"Green Day — Readiness Score: {readiness_score}/10")
@@ -135,11 +173,64 @@ if submitted:
 
     st.divider()
 
-    st.info(
-        "Next build step: this readiness result will generate a workout automatically. "
-        "For now, this page saves your check-in and readiness score."
+    st.subheader("Generated Workout")
+
+    col_a, col_b, col_c = st.columns(3)
+
+    with col_a:
+        st.metric("Workout Type", workout["workout_type"])
+
+    with col_b:
+        st.metric("Focus", workout["focus"])
+
+    with col_c:
+        st.metric("Estimated Duration", f"{workout['estimated_duration']} min")
+
+    st.info(workout["generation_reason"])
+
+    workout_df = pd.DataFrame(workout["exercises"])
+
+    display_columns = [
+        "exercise_name",
+        "planned_sets",
+        "planned_reps_min",
+        "planned_reps_max",
+        "planned_weight",
+        "target_rpe",
+        "notes",
+    ]
+
+    st.dataframe(
+        workout_df[display_columns],
+        use_container_width=True,
+        hide_index=True,
     )
 
-if "latest_checkin" in st.session_state:
-    with st.expander("Latest check-in data"):
+    st.divider()
+
+    for index, exercise in enumerate(workout["exercises"], start=1):
+        with st.expander(f"{index}. {exercise['exercise_name']}"):
+            st.write(f"**Movement Pattern:** {exercise['movement_pattern']}")
+            st.write(f"**Category:** {exercise['exercise_category']}")
+            st.write(
+                f"**Prescription:** {exercise['planned_sets']} sets x "
+                f"{exercise['planned_reps_min']}-{exercise['planned_reps_max']} reps"
+            )
+
+            if exercise["planned_weight"] and exercise["planned_weight"] > 0:
+                st.write(f"**Suggested Weight:** {exercise['planned_weight']} lb")
+            else:
+                st.write("**Suggested Weight:** Choose based on target RPE")
+
+            st.write(f"**Target RPE:** {exercise['target_rpe']}")
+            st.write(f"**Notes:** {exercise['notes']}")
+
+    st.warning(
+        "Set logging is coming in the next step. For now, the app saves the generated workout as the plan."
+    )
+
+with st.expander("Latest check-in data"):
+    if "latest_checkin" in st.session_state:
         st.json(st.session_state["latest_checkin"])
+    else:
+        st.write("No check-in submitted yet.")
