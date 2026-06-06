@@ -503,3 +503,55 @@ def reset_database() -> None:
     conn.close()
 
     init_db()
+def delete_workout(workout_id: int) -> None:
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM completed_sets WHERE workout_id = ?;", (workout_id,))
+    cursor.execute("DELETE FROM planned_exercises WHERE workout_id = ?;", (workout_id,))
+    cursor.execute("DELETE FROM workout_sessions WHERE id = ?;", (workout_id,))
+
+    conn.commit()
+    conn.close()
+
+
+def delete_checkin(checkin_id: int) -> None:
+    conn = get_connection()
+    conn.execute("DELETE FROM daily_checkins WHERE id = ?;", (checkin_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_latest_completed_workout_id() -> int | None:
+    conn = get_connection()
+    row = conn.execute(
+        """
+        SELECT id
+        FROM workout_sessions
+        WHERE completed = 1
+        ORDER BY id DESC
+        LIMIT 1;
+        """
+    ).fetchone()
+    conn.close()
+
+    if row:
+        return int(row["id"])
+
+    return None
+
+
+def get_workout_count() -> int:
+    conn = get_connection()
+    row = conn.execute("SELECT COUNT(*) AS count FROM workout_sessions;").fetchone()
+    conn.close()
+    return int(row["count"]) if row else 0
+
+
+def get_completed_workout_count() -> int:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM workout_sessions WHERE completed = 1;"
+    ).fetchone()
+    conn.close()
+    return int(row["count"]) if row else 0
