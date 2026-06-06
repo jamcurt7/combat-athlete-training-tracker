@@ -10,10 +10,12 @@ from src.database import (
     insert_planned_exercise,
     insert_completed_set,
     mark_workout_completed,
+    get_setting,
 )
 from src.readiness_engine import calculate_readiness_score
 from src.workout_generator import generate_workout
 from src.progression_engine import update_progression_from_workout
+from src.ui import readiness_badge
 
 
 st.set_page_config(page_title="Start Workout", page_icon="🏋️", layout="wide")
@@ -31,6 +33,8 @@ st.write(
 
 st.divider()
 
+default_bodyweight = float(get_setting("current_bodyweight", 218))
+
 with st.form("daily_checkin_form"):
     st.subheader("Daily Check-In")
 
@@ -41,7 +45,7 @@ with st.form("daily_checkin_form"):
             "Bodyweight today, optional",
             min_value=0.0,
             max_value=500.0,
-            value=218.0,
+            value=default_bodyweight,
             step=0.2,
         )
 
@@ -168,16 +172,12 @@ if "latest_checkin" in st.session_state and "latest_workout" in st.session_state
     readiness_category = checkin["readiness_category"]
     readiness_score = checkin["readiness_score"]
 
-    if readiness_category == "Green":
-        st.success(f"Green Day — Readiness Score: {readiness_score}/10")
-    elif readiness_category == "Yellow":
-        st.info(f"Yellow Day — Readiness Score: {readiness_score}/10")
-    elif readiness_category == "Orange":
-        st.warning(f"Orange Day — Readiness Score: {readiness_score}/10")
-    else:
-        st.error(f"Red Day — Readiness Score: {readiness_score}/10")
+    readiness_badge(readiness_category, readiness_score)
 
     st.write(explanation)
+
+    if workout.get("deload"):
+        st.warning("Scheduled deload logic is active for this workout.")
 
     st.divider()
 
@@ -213,6 +213,34 @@ if "latest_checkin" in st.session_state and "latest_workout" in st.session_state
         use_container_width=True,
         hide_index=True,
     )
+
+    st.divider()
+
+    st.subheader("Exercise Cards")
+
+    for index, exercise in enumerate(workout["exercises"], start=1):
+        with st.container(border=True):
+            st.markdown(f"### {index}. {exercise['exercise_name']}")
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            with c1:
+                st.metric("Sets", exercise["planned_sets"])
+
+            with c2:
+                st.metric("Reps", f"{exercise['planned_reps_min']}-{exercise['planned_reps_max']}")
+
+            with c3:
+                if exercise["planned_weight"] and exercise["planned_weight"] > 0:
+                    st.metric("Suggested Load", f"{exercise['planned_weight']} lb")
+                else:
+                    st.metric("Suggested Load", "RPE-based")
+
+            with c4:
+                st.metric("Target RPE", exercise["target_rpe"])
+
+            st.caption(f"{exercise['movement_pattern']} • {exercise['exercise_category']}")
+            st.write(exercise["notes"])
 
     st.divider()
 
