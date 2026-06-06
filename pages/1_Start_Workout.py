@@ -8,9 +8,12 @@ from src.database import (
     insert_checkin,
     insert_workout_session,
     insert_planned_exercise,
+    insert_completed_set,
+    mark_workout_completed,
 )
 from src.readiness_engine import calculate_readiness_score
 from src.workout_generator import generate_workout
+from src.progression_engine import update_progression_from_workout
 
 
 st.set_page_config(page_title="Start Workout", page_icon="🏋️", layout="wide")
@@ -21,8 +24,8 @@ st.title("Start Workout")
 
 st.write(
     """
-    Complete the daily check-in first. The app will use this to decide whether today should be
-    a push day, normal day, light/accessory day, or recovery day.
+    Complete the daily check-in first. The app will generate today's workout, then let you
+    log your sets, reps, weight, and RPE.
     """
 )
 
@@ -94,6 +97,7 @@ with st.form("daily_checkin_form"):
 
     submitted = st.form_submit_button("Generate Workout", use_container_width=True)
 
+
 if submitted:
     checkin = {
         "date": date.today().isoformat(),
@@ -145,12 +149,16 @@ if submitted:
     st.session_state["latest_workout"] = workout
     st.session_state["latest_workout_id"] = workout_id
     st.session_state["latest_readiness_explanation"] = explanation
+    st.session_state["workout_saved"] = False
+    st.session_state["progression_updates"] = []
 
     st.success("Check-in saved and workout generated.")
+
 
 if "latest_checkin" in st.session_state and "latest_workout" in st.session_state:
     checkin = st.session_state["latest_checkin"]
     workout = st.session_state["latest_workout"]
+    workout_id = st.session_state["latest_workout_id"]
     explanation = st.session_state["latest_readiness_explanation"]
 
     st.divider()
@@ -208,26 +216,137 @@ if "latest_checkin" in st.session_state and "latest_workout" in st.session_state
 
     st.divider()
 
-    for index, exercise in enumerate(workout["exercises"], start=1):
-        with st.expander(f"{index}. {exercise['exercise_name']}"):
-            st.write(f"**Movement Pattern:** {exercise['movement_pattern']}")
-            st.write(f"**Category:** {exercise['exercise_category']}")
-            st.write(
-                f"**Prescription:** {exercise['planned_sets']} sets x "
-                f"{exercise['planned_reps_min']}-{exercise['planned_reps_max']} reps"
+    st.subheader("Log Completed Sets")
+
+    st.write(
+        """
+        Enter what you actually completed. For bodyweight or accessory movements,
+        leave weight at 0 if you do not want to track load.
+        """
+    )
+
+    with st.form("set_logging_form"):
+        all_set_entries = []
+
+        for exercise_index, exercise in enumerate(workout["exercises"], start=1):
+            st.markdown(f"### {exercise_index}. {exercise['exercise_name']}")
+
+            st.caption(
+                f"Target: {exercise['planned_sets']} sets x "
+                f"{exercise['planned_reps_min']}-{exercise['planned_reps_max']} reps "
+                f"@ RPE {exercise['target_rpe']}"
             )
 
             if exercise["planned_weight"] and exercise["planned_weight"] > 0:
-                st.write(f"**Suggested Weight:** {exercise['planned_weight']} lb")
+                default_weight = float(exercise["planned_weight"])
             else:
-                st.write("**Suggested Weight:** Choose based on target RPE")
+                default_weight = 0.0
 
-            st.write(f"**Target RPE:** {exercise['target_rpe']}")
-            st.write(f"**Notes:** {exercise['notes']}")
+            planned_sets = int(exercise["planned_sets"])
 
-    st.warning(
-        "Set logging is coming in the next step. For now, the app saves the generated workout as the plan."
-    )
+            for set_number in range(1, planned_sets + 1):
+                col_w, col_r, col_rpe, col_notes = st.columns([1, 1, 1, 2])
+
+                with col_w:
+                    weight = st.number_input(
+                        f"Weight set {set_number}",
+                        min_value=0.0,
+                        max_value=1000.0,
+                        value=default_weight,
+                        step=2.5,
+                        key=f"weight_{exercise_index}_{set_number}",
+                    )
+
+                with col_r:
+                    reps = st.number_input(
+                        f"Reps set {set_number}",
+                        min_value=0,
+                        max_value=100,
+                        value=int(exercise["planned_reps_min"]),
+                        step=1,
+                        key=f"reps_{exercise_index}_{set_number}",
+                    )
+
+                with col_rpe:
+                    rpe = st.number_input(
+                        f"RPE set {set_number}",
+                        min_value=0.0,
+                        max_value=10.0,
+                        value=float(exercise["target_rpe"]),
+                        step=0.5,
+                        key=f"rpe_{exercise_index}_{set_number}",
+                    )
+
+                with col_notes:
+                    notes = st.text_input(
+                        f"Notes set {set_number}",
+                        value="",
+                        key=f"notes_{exercise_index}_{set_number}",
+                    )
+
+                all_set_entries.append(
+                    {
+                        "exercise_name": exercise["exercise_name"],
+                        "set_number": set_number,
+                        "weight": weight,
+                        "reps": reps,
+                        "rpe": rpe,
+                        "notes": notes,
+                    }
+                )
+
+            st.divider()
+
+        session_rpe = st.slider("Overall workout difficulty / session RPE", 1, 10, 7)
+
+        workout_notes = st.text_area(
+            "Workout notes",
+            placeholder="Example: Felt strong, grip was tired, shortened accessories, etc.",
+        )
+
+        save_workout = st.form_submit_button("Save Completed Workout", use_container_width=True)
+
+    if save_workout:
+        saved_sets = 0
+
+        for set_entry in all_set_entries:
+            if int(set_entry["reps"]) > 0:
+                insert_completed_set(workout_id, set_entry)
+                saved_sets += 1
+
+        mark_workout_completed(
+            workout_id=workout_id,
+            session_rpe=float(session_rpe),
+            notes=workout_notes,
+        )
+
+        progression_updates = update_progression_from_workout(
+            workout_id=workout_id,
+            readiness_category=readiness_category,
+        )
+
+        st.session_state["workout_saved"] = True
+        st.session_state["progression_updates"] = progression_updates
+
+        st.success(f"Workout saved. Completed sets saved: {saved_sets}")
+
+    if st.session_state.get("workout_saved"):
+        st.divider()
+        st.subheader("Progression Update")
+
+        updates = st.session_state.get("progression_updates", [])
+
+        if updates:
+            updates_df = pd.DataFrame(updates)
+            st.dataframe(updates_df, use_container_width=True, hide_index=True)
+
+            for update in updates:
+                st.write(f"**{update['exercise_name']}**: {update['decision']}")
+        else:
+            st.info(
+                "No main lift progression updates were made. This can happen on recovery/light days or if no main lifts were logged."
+            )
+
 
 with st.expander("Latest check-in data"):
     if "latest_checkin" in st.session_state:
