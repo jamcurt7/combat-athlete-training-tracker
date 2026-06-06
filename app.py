@@ -62,7 +62,7 @@ st.divider()
 
 st.subheader("Quick Navigation")
 
-col_a, col_b, col_c, col_d = st.columns(4)
+col_a, col_b, col_c, col_d, col_e = st.columns(5)
 
 with col_a:
     st.page_link("pages/1_Start_Workout.py", label="Start Workout", icon="🏋️")
@@ -76,6 +76,8 @@ with col_c:
 with col_d:
     st.page_link("pages/4_Export_Center.py", label="Export Data", icon="📥")
 
+with col_e:
+    st.page_link("pages/6_Program_Templates.py", label="Templates", icon="🧠")
 st.divider()
 
 metrics = calculate_summary_metrics()
