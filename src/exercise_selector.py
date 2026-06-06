@@ -1,7 +1,5 @@
 from typing import Any
 
-import pandas as pd
-
 from src.database import read_table
 from src.exercise_catalog import get_exercise_catalog
 
@@ -18,7 +16,7 @@ FOCUS_TAGS = {
     "Lower emphasis": ["lower", "single_leg", "posterior_chain"],
     "Upper emphasis": ["upper", "grip", "press", "pull"],
     "Posterior chain / grappling": ["posterior_chain", "grappling", "grip", "core"],
-    "Accessory / pump": ["arms", "forearms", "shoulders", "accessory", "grip", "core"],
+    "Accessory / pump": ["arms", "forearms", "shoulders", "accessory", "grip", "core", "pump"],
     "Recovery / mobility": ["recovery", "mobility", "stretch", "cardio"],
     "Deload / Accessory Full Body": ["recovery", "mobility", "light"],
 }
@@ -34,7 +32,6 @@ def get_recent_exercise_counts(limit: int = 5) -> dict[str, int]:
         return {}
 
     recent = sets.tail(100)
-
     counts = recent["exercise_name"].value_counts().to_dict()
     return {str(name): int(count) for name, count in counts.items()}
 
@@ -103,15 +100,15 @@ def score_exercise(
             score -= 2
 
     if workout_modifier == "fun":
-        if category in {"accessory", "gpp", "mobility", "cardio"}:
+        if category in {"accessory", "gpp", "mobility", "cardio", "stretch"}:
             score += 6
-        if exercise.get("modality") in {"machine", "flow", "loaded carry", "bodyweight grip"}:
+        if exercise.get("modality") in {"machine", "flow", "loaded carry", "bodyweight grip", "footwork cardio"}:
             score += 3
 
     if workout_modifier == "chaos":
-        if category in {"gpp", "mobility", "accessory"}:
+        if category in {"gpp", "mobility", "accessory", "stretch"}:
             score += 8
-        if exercise.get("modality") in {"loaded carry", "flow", "single-leg", "isometric"}:
+        if exercise.get("modality") in {"loaded carry", "flow", "single-leg", "isometric", "locomotion", "ballistic"}:
             score += 5
 
     score -= fatigue_penalty_for_readiness(exercise.get("fatigue_cost", "medium"), readiness_category)
@@ -235,3 +232,136 @@ def apply_overrides(exercise: dict[str, Any], overrides: dict[str, Any]) -> dict
         updated[key] = value
 
     return updated
+
+
+def substitute_exercise(
+    current_exercise: dict[str, Any],
+    substitution_type: str,
+    readiness_category: str,
+    focus: str,
+    workout_modifier: str,
+    current_workout_exercises: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    substitution_type:
+    - modality: same movement pattern, different equipment/modality if possible
+    - full: different movement pattern/category if possible
+    """
+    catalog = get_exercise_catalog()
+    recent_counts = get_recent_exercise_counts()
+
+    current_name = current_exercise.get("exercise_name", "")
+    current_pattern = current_exercise.get("movement_pattern", "")
+    current_modality = current_exercise.get("modality", "")
+    current_category = current_exercise.get("exercise_category", "")
+    current_prescription_type = current_exercise.get("prescription_type", "strength")
+
+    avoid_names = {current_name}
+    avoid_names.update([exercise.get("exercise_name", "") for exercise in current_workout_exercises])
+
+    candidates = []
+
+    for exercise in catalog:
+        if exercise["exercise_name"] in avoid_names:
+            continue
+
+        if substitution_type == "modality":
+            if exercise["movement_pattern"] != current_pattern:
+                continue
+
+            # Prefer a true modality/equipment change.
+            if exercise.get("modality") == current_modality and exercise.get("equipment") == current_exercise.get("equipment"):
+                continue
+
+            # Keep the same broad category when possible.
+            if current_category == "main_lift" and exercise["exercise_category"] not in {"main_lift", "secondary_lift"}:
+                continue
+
+        elif substitution_type == "full":
+            if exercise["movement_pattern"] == current_pattern:
+                continue
+
+            # Avoid replacing a strength movement with pure stretching unless current movement is recovery-style.
+            if current_prescription_type == "strength" and exercise["prescription_type"] in {"stretch", "mobility", "cardio"}:
+                continue
+
+        else:
+            continue
+
+        candidates.append(exercise)
+
+    if not candidates:
+        candidates = [
+            exercise
+            for exercise in catalog
+            if exercise["exercise_name"] != current_name
+        ]
+
+    scored = []
+
+    desired_pattern = current_pattern if substitution_type == "modality" else exercise_goal_from_current(current_exercise)
+
+    for exercise in candidates:
+        score = score_exercise(
+            exercise=exercise,
+            desired_pattern=desired_pattern,
+            readiness_category=readiness_category,
+            focus=focus,
+            workout_modifier=workout_modifier,
+            recent_counts=recent_counts,
+            avoid_names=avoid_names,
+        )
+
+        if substitution_type == "modality":
+            if exercise.get("modality") != current_modality:
+                score += 12
+            if exercise.get("equipment") != current_exercise.get("equipment"):
+                score += 8
+
+        if substitution_type == "full":
+            if exercise["movement_pattern"] != current_pattern:
+                score += 12
+            if exercise["exercise_category"] == current_category:
+                score += 4
+
+        scored.append((score, exercise))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    replacement = scored[0][1].copy()
+
+    replacement["planned_sets"] = current_exercise.get("planned_sets", replacement.get("planned_sets", 3))
+    replacement["target_rpe"] = min(
+        float(current_exercise.get("target_rpe", replacement.get("target_rpe", 7.0))),
+        float(replacement.get("target_rpe", 7.0)),
+    )
+
+    replacement["notes"] = (
+        replacement.get("notes", "")
+        + f" Substituted for {current_name} using {substitution_type} substitution."
+    )
+
+    return replacement
+
+
+def exercise_goal_from_current(current_exercise: dict[str, Any]) -> str:
+    category = current_exercise.get("exercise_category", "")
+    pattern = current_exercise.get("movement_pattern", "")
+
+    if category == "main_lift":
+        if pattern in {"squat", "hinge"}:
+            return "horizontal_push"
+        if pattern in {"horizontal_push", "vertical_push"}:
+            return "vertical_pull"
+        return "squat"
+
+    if pattern in {"mobility", "stretch"}:
+        return "conditioning"
+
+    if pattern in {"conditioning"}:
+        return "mobility"
+
+    if pattern in {"core"}:
+        return "carry_grip"
+
+    return "core"
