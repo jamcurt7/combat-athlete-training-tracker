@@ -235,22 +235,6 @@ def inject_global_styles() -> None:
             color: #CBD5E1;
         }
 
-        .flow-step {
-            background: rgba(33,17,56,0.55);
-            border: 1px solid rgba(0,245,212,0.11);
-            border-radius: 16px;
-            padding: 0.85rem;
-            text-align: center;
-            font-weight: 800;
-            margin-bottom: 0.35rem;
-        }
-
-        .flow-active {
-            border-color: rgba(0,245,212,0.62);
-            background: rgba(0,245,212,0.10);
-            color: #00F5D4;
-        }
-
         .action-panel {
             background: linear-gradient(135deg, rgba(22,11,46,0.92), rgba(9,5,15,0.98));
             border: 1px solid rgba(0,245,212,0.14);
@@ -423,44 +407,39 @@ def mission_card(primary_goal: str, training_bias: str) -> None:
     )
 
 
-def flow_indicator(active_step: int) -> None:
-    labels = ["Check-In", "Workout", "Log Sets", "Complete"]
-    cols = st.columns(4)
-
-    for idx, col in enumerate(cols, start=1):
-        class_name = "flow-step flow-active" if idx == active_step else "flow-step"
-        with col:
-            st.markdown(
-                f"<div class='{class_name}'>Step {idx}<br>{labels[idx-1]}</div>",
-                unsafe_allow_html=True,
-            )
-
-
 def step_navigation(active_step: int) -> None:
+    step_defs = [
+        (1, "Check-In"),
+        (2, "Workout"),
+        (3, "Log Sets"),
+        (4, "Complete"),
+    ]
+
     cols = st.columns(4)
 
-    with cols[0]:
-        if st.button("1. Check-In", use_container_width=True, disabled=active_step == 1):
-            st.session_state["workout_flow_step"] = 1
-            st.rerun()
+    for col, (step_num, label) in zip(cols, step_defs):
+        disabled = False
 
-    with cols[1]:
-        disabled = "latest_workout" not in st.session_state
-        if st.button("2. Workout", use_container_width=True, disabled=disabled or active_step == 2):
-            st.session_state["workout_flow_step"] = 2
-            st.rerun()
+        if step_num in {2, 3} and "latest_workout" not in st.session_state:
+            disabled = True
 
-    with cols[2]:
-        disabled = "latest_workout" not in st.session_state
-        if st.button("3. Log Sets", use_container_width=True, disabled=disabled or active_step == 3):
-            st.session_state["workout_flow_step"] = 3
-            st.rerun()
+        if step_num == 4 and not st.session_state.get("workout_saved", False):
+            disabled = True
 
-    with cols[3]:
-        disabled = not st.session_state.get("workout_saved", False)
-        if st.button("4. Complete", use_container_width=True, disabled=disabled or active_step == 4):
-            st.session_state["workout_flow_step"] = 4
-            st.rerun()
+        button_label = f"Step {step_num}: {label}"
+
+        if step_num == active_step:
+            button_label = f"✓ {button_label}"
+
+        with col:
+            if st.button(
+                button_label,
+                use_container_width=True,
+                disabled=disabled or step_num == active_step,
+                key=f"step_nav_{step_num}",
+            ):
+                st.session_state["workout_flow_step"] = step_num
+                st.rerun()
 
 
 def compact_exercise_card(exercise: dict, index: int) -> None:
