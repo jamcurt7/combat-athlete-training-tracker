@@ -631,37 +631,44 @@ def compact_exercise_card(exercise: dict, index: int) -> None:
     stats = get_exercise_stat_blocks(exercise)
     metadata_pills = get_metadata_pills(exercise)
 
-    stats_html = ""
-
-    for label, value in stats:
-        stats_html += f"""
-            <div class="mini-stat">
-                <div class="mini-stat-label">{label}</div>
-                <div class="mini-stat-value">{value}</div>
-            </div>
-        """
-
-    metadata_html = ""
+    stats_html = "".join(
+        [
+            f"""
+<div class="mini-stat">
+    <div class="mini-stat-label">{label}</div>
+    <div class="mini-stat-value">{value}</div>
+</div>
+"""
+            for label, value in stats
+        ]
+    )
 
     if metadata_pills:
-        pill_html = "".join([f"<span class='metadata-pill'>{pill}</span>" for pill in metadata_pills])
-        metadata_html = f"<div class='metadata-row'>{pill_html}</div>"
+        metadata_html = (
+            "<div class='metadata-row'>"
+            + "".join([f"<span class='metadata-pill'>{pill}</span>" for pill in metadata_pills])
+            + "</div>"
+        )
+    else:
+        metadata_html = ""
 
-    st.markdown(
-        f"""
-        <div class="exercise-card exercise-card-{safe_category}">
-            <span class="prescription-chip">{prescription_label(prescription_type)}</span>
-            <div class="small-label">{exercise.get('movement_pattern', 'movement')} · {exercise.get('exercise_category', 'exercise')}</div>
-            <h3>{index}. {exercise.get('exercise_name', 'Exercise')}</h3>
-            <div class="exercise-grid" style="display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.6rem; margin: 0.75rem 0;">
-                {stats_html}
-            </div>
-            {metadata_html}
-            <p class="muted-text">{exercise.get('notes', '')}</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    html = f"""
+<div class="exercise-card exercise-card-{safe_category}">
+    <span class="prescription-chip">{prescription_label(prescription_type)}</span>
+    <div class="small-label">{exercise.get('movement_pattern', 'movement')} · {exercise.get('exercise_category', 'exercise')}</div>
+    <h3>{index}. {exercise.get('exercise_name', 'Exercise')}</h3>
+
+    <div class="exercise-grid" style="display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.6rem; margin: 0.75rem 0;">
+        {stats_html}
+    </div>
+
+    {metadata_html}
+
+    <p class="muted-text">{exercise.get('notes', '')}</p>
+</div>
+"""
+
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def action_panel_start() -> None:
