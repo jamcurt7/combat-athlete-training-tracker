@@ -21,6 +21,7 @@ from src.ui import (
     readiness_panel,
     compact_exercise_card,
     flow_indicator,
+    step_navigation,
 )
 
 
@@ -40,6 +41,7 @@ def clear_active_workout() -> None:
         "workout_saved",
         "progression_updates",
         "completed_set_keys",
+        "workout_flow_step",
     ]
 
     for key in keys_to_clear:
@@ -99,24 +101,22 @@ def adjust_rpe(key: str, amount: float) -> None:
     st.session_state[key] = min(10.0, max(0.0, float(st.session_state.get(key, 7.0)) + amount))
 
 
+if "workout_flow_step" not in st.session_state:
+    st.session_state["workout_flow_step"] = 1
+
 page_header(
     "Start Workout",
     "Check in, generate today’s adaptive workout, then log your completed sets.",
 )
 
+active_step = st.session_state["workout_flow_step"]
+
+step_navigation(active_step)
+flow_indicator(active_step=active_step)
+
 default_bodyweight = float(get_setting("current_bodyweight", 218))
 
-checkin_tab, workout_tab, log_tab = st.tabs(
-    [
-        "1. Daily Check-In",
-        "2. Generated Workout",
-        "3. Log Sets",
-    ]
-)
-
-with checkin_tab:
-    flow_indicator(active_step=1)
-
+if active_step == 1:
     st.subheader("Daily Check-In")
 
     st.write(
@@ -282,14 +282,16 @@ with checkin_tab:
         st.session_state["workout_saved"] = False
         st.session_state["progression_updates"] = []
         st.session_state["completed_set_keys"] = set()
+        st.session_state["workout_flow_step"] = 2
 
-        st.success("Check-in saved and workout generated. Open the Generated Workout tab next.")
+        st.rerun()
 
-with workout_tab:
-    flow_indicator(active_step=2)
-
+elif active_step == 2:
     if "latest_checkin" not in st.session_state or "latest_workout" not in st.session_state:
         st.info("Complete the Daily Check-In first to generate a workout.")
+        if st.button("Go to Check-In", use_container_width=True):
+            st.session_state["workout_flow_step"] = 1
+            st.rerun()
     else:
         checkin = st.session_state["latest_checkin"]
         workout = st.session_state["latest_workout"]
@@ -333,6 +335,20 @@ with workout_tab:
         for index, exercise in enumerate(workout["exercises"], start=1):
             compact_exercise_card(exercise, index)
 
+        st.divider()
+
+        action_col1, action_col2 = st.columns(2)
+
+        with action_col1:
+            if st.button("Start Logging Sets", use_container_width=True):
+                st.session_state["workout_flow_step"] = 3
+                st.rerun()
+
+        with action_col2:
+            if st.button("Back to Check-In", use_container_width=True):
+                st.session_state["workout_flow_step"] = 1
+                st.rerun()
+
         with st.expander("Table View"):
             workout_df = pd.DataFrame(workout["exercises"])
 
@@ -352,11 +368,12 @@ with workout_tab:
                 hide_index=True,
             )
 
-with log_tab:
-    flow_indicator(active_step=3)
-
+elif active_step == 3:
     if "latest_checkin" not in st.session_state or "latest_workout" not in st.session_state:
         st.info("Generate a workout first before logging sets.")
+        if st.button("Go to Check-In", use_container_width=True):
+            st.session_state["workout_flow_step"] = 1
+            st.rerun()
     else:
         checkin = st.session_state["latest_checkin"]
         workout = st.session_state["latest_workout"]
@@ -381,10 +398,21 @@ with log_tab:
         )
 
         for exercise_index, exercise in enumerate(workout["exercises"], start=1):
+            exercise_sets = int(exercise["planned_sets"])
+            exercise_completed = len(
+                [
+                    key
+                    for key in st.session_state["completed_set_keys"]
+                    if key.startswith(f"{exercise_index}_")
+                ]
+            )
+
+            expanded_default = exercise_completed < exercise_sets and exercise_index <= 2
+
             with st.expander(
                 f"{exercise_index}. {exercise['exercise_name']} — "
-                f"{exercise['planned_sets']} x {exercise['planned_reps_min']}-{exercise['planned_reps_max']}",
-                expanded=exercise_index <= 2,
+                f"{exercise_completed}/{exercise_sets} sets complete",
+                expanded=expanded_default,
             ):
                 st.caption(
                     f"Target RPE {exercise['target_rpe']} · {exercise['movement_pattern']} · {exercise['exercise_category']}"
@@ -487,23 +515,31 @@ with log_tab:
                         key=f"notes_{set_key}",
                     )
 
-                    if st.button("Complete Set", key=f"complete_{set_key}", use_container_width=True):
-                        set_data = {
-                            "exercise_name": exercise["exercise_name"],
-                            "set_number": set_number,
-                            "weight": float(st.session_state[weight_key]),
-                            "reps": int(st.session_state[reps_key]),
-                            "rpe": float(st.session_state[rpe_key]),
-                            "notes": notes,
-                        }
+                    complete_col1, complete_col2 = st.columns(2)
 
-                        if int(set_data["reps"]) > 0:
-                            insert_completed_set(workout_id, set_data)
+                    with complete_col1:
+                        if st.button("Complete Set", key=f"complete_{set_key}", use_container_width=True):
+                            set_data = {
+                                "exercise_name": exercise["exercise_name"],
+                                "set_number": set_number,
+                                "weight": float(st.session_state[weight_key]),
+                                "reps": int(st.session_state[reps_key]),
+                                "rpe": float(st.session_state[rpe_key]),
+                                "notes": notes,
+                            }
+
+                            if int(set_data["reps"]) > 0:
+                                insert_completed_set(workout_id, set_data)
+                                st.session_state["completed_set_keys"].add(set_key)
+                                st.success("Set saved.")
+                                st.rerun()
+                            else:
+                                st.warning("Reps must be greater than 0 to complete a set.")
+
+                    with complete_col2:
+                        if st.button("Skip Set", key=f"skip_{set_key}", use_container_width=True):
                             st.session_state["completed_set_keys"].add(set_key)
-                            st.success("Set saved.")
                             st.rerun()
-                        else:
-                            st.warning("Reps must be greater than 0 to complete a set.")
 
                     st.divider()
 
@@ -535,24 +571,38 @@ with log_tab:
 
                 st.session_state["workout_saved"] = True
                 st.session_state["progression_updates"] = progression_updates
-
-                st.success("Workout saved and completed.")
-
-                if progression_updates:
-                    st.subheader("Progression Update")
-                    updates_df = pd.DataFrame(progression_updates)
-                    st.dataframe(updates_df, use_container_width=True, hide_index=True)
-
-                    for update in progression_updates:
-                        st.write(f"**{update['exercise_name']}**: {update['decision']}")
-                else:
-                    st.info("No main lift progression updates were made.")
-
-                clear_active_workout()
-                st.info("Active workout cleared. You can start a new workout from the Daily Check-In tab.")
+                st.session_state["workout_flow_step"] = 4
                 st.rerun()
 
         with finish_col2:
-            if st.button("Clear Without Saving Workout Complete", use_container_width=True):
+            if st.button("Clear Without Marking Complete", use_container_width=True):
                 clear_active_workout()
                 st.rerun()
+
+elif active_step == 4:
+    flow_indicator(active_step=4)
+
+    st.success("Workout saved and completed.")
+
+    updates = st.session_state.get("progression_updates", [])
+
+    if updates:
+        st.subheader("Progression Update")
+        updates_df = pd.DataFrame(updates)
+        st.dataframe(updates_df, use_container_width=True, hide_index=True)
+
+        for update in updates:
+            st.write(f"**{update['exercise_name']}**: {update['decision']}")
+    else:
+        st.info("No main lift progression updates were made.")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Start New Workout", use_container_width=True):
+            clear_active_workout()
+            st.session_state["workout_flow_step"] = 1
+            st.rerun()
+
+    with col2:
+        st.page_link("pages/2_Workout_History.py", label="View Workout History")
