@@ -1,6 +1,6 @@
 from typing import Any
 
-from src.database import read_table
+from src.database import read_table, get_personalization_settings
 from src.exercise_catalog import get_exercise_catalog
 
 
@@ -68,6 +68,14 @@ READINESS_METHOD_BONUS = {
         "movement_prep": 7,
     },
 }
+
+
+def normalize_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def normalize_list(values: list[Any]) -> list[str]:
+    return [normalize_text(value) for value in values if normalize_text(value)]
 
 
 def get_recent_exercise_counts(limit: int = 5) -> dict[str, int]:
@@ -171,6 +179,182 @@ def modifier_bonus(exercise: dict[str, Any], workout_modifier: str) -> float:
     return score
 
 
+def equipment_matches_preference(exercise: dict[str, Any], preferred_equipment: list[str]) -> bool:
+    if not preferred_equipment:
+        return False
+
+    equipment_text = normalize_text(exercise.get("equipment", ""))
+    modality_text = normalize_text(exercise.get("modality", ""))
+    name_text = normalize_text(exercise.get("exercise_name", ""))
+
+    combined = " ".join([equipment_text, modality_text, name_text])
+
+    for equipment in normalize_list(preferred_equipment):
+        if equipment in combined:
+            return True
+
+    return False
+
+
+def exercise_matches_mobility_priority(exercise: dict[str, Any], mobility_priorities: list[str]) -> bool:
+    if not mobility_priorities:
+        return False
+
+    body_region = normalize_text(exercise.get("body_region", ""))
+    mobility_style = normalize_text(exercise.get("mobility_style", ""))
+    name = normalize_text(exercise.get("exercise_name", ""))
+    tags = " ".join(normalize_list(exercise.get("tags", [])))
+
+    combined = " ".join([body_region, mobility_style, name, tags])
+
+    for priority in normalize_list(mobility_priorities):
+        if priority in combined:
+            return True
+
+        if priority == "t-spine" and "thoracic" in combined:
+            return True
+
+        if priority == "thoracic" and "t-spine" in combined:
+            return True
+
+    return False
+
+
+def cardio_preference_bonus(exercise: dict[str, Any], cardio_preference: str) -> float:
+    preference = normalize_text(cardio_preference)
+    prescription_type = normalize_text(exercise.get("prescription_type", ""))
+    modality = normalize_text(exercise.get("modality", ""))
+    name = normalize_text(exercise.get("exercise_name", ""))
+    session_slot = normalize_text(exercise.get("session_slot", ""))
+
+    if prescription_type not in {"cardio", "cardio_skill", "conditioning"} and "cardio" not in session_slot:
+        return 0.0
+
+    combined = " ".join([modality, name, session_slot])
+
+    technical_terms = ["technical", "shadow", "boxing", "muay", "footwork", "jump rope", "stance", "defensive"]
+    machine_terms = ["bike", "rower", "treadmill", "incline", "machine", "erg"]
+    low_impact_terms = ["bike", "walk", "incline", "zone2", "zone 2", "sled"]
+
+    score = 0.0
+
+    if preference == "technical combat":
+        if any(term in combined for term in technical_terms):
+            score += 14
+        if any(term in combined for term in machine_terms):
+            score -= 4
+
+    elif preference == "machine":
+        if any(term in combined for term in machine_terms):
+            score += 12
+        if any(term in combined for term in technical_terms):
+            score -= 5
+
+    elif preference == "low impact":
+        if any(term in combined for term in low_impact_terms):
+            score += 10
+        if "jump rope" in combined:
+            score -= 6
+
+    elif preference == "mixed":
+        if any(term in combined for term in technical_terms):
+            score += 4
+        if any(term in combined for term in machine_terms):
+            score += 4
+
+    return score
+
+
+def strength_method_preference_bonus(exercise: dict[str, Any], strength_method_preference: str) -> float:
+    preference = normalize_text(strength_method_preference)
+    method_tag = normalize_text(exercise.get("method_tag", ""))
+    category = normalize_text(exercise.get("exercise_category", ""))
+    prescription_type = normalize_text(exercise.get("prescription_type", ""))
+
+    if category not in {"main_lift", "secondary_lift", "accessory", "gpp"} and prescription_type != "strength":
+        return 0.0
+
+    if preference == "standard strength":
+        if method_tag == "submax_strength":
+            return 9
+        if method_tag in {"dynamic_effort", "overcoming_isometric"}:
+            return -4
+
+    if preference == "conjugate-inspired":
+        if method_tag in {"dynamic_effort", "overcoming_isometric", "repeated_effort"}:
+            return 9
+        if method_tag == "submax_strength":
+            return 2
+
+    if preference == "isometrics":
+        if method_tag in {"overcoming_isometric", "yielding_isometric"}:
+            return 14
+        if method_tag == "dynamic_effort":
+            return -5
+
+    if preference == "repeated effort":
+        if method_tag == "repeated_effort":
+            return 12
+        if method_tag in {"overcoming_isometric", "dynamic_effort"}:
+            return -2
+
+    return 0.0
+
+
+def personalization_bonus(
+    exercise: dict[str, Any],
+    personalization: dict[str, Any],
+) -> float:
+    score = 0.0
+
+    name = str(exercise.get("exercise_name", ""))
+    avoided = set(personalization.get("avoided_exercises", []))
+    favorites = set(personalization.get("favorite_exercises", []))
+    preferred_equipment = personalization.get("preferred_equipment", [])
+    mobility_priorities = personalization.get("mobility_priorities", [])
+    cardio_preference = personalization.get("cardio_preference", "Mixed")
+    strength_method_preference = personalization.get("strength_method_preference", "App decides")
+
+    prescription_type = normalize_text(exercise.get("prescription_type", ""))
+
+    if name in avoided:
+        score -= 1000
+
+    if name in favorites:
+        score += 14
+
+    if equipment_matches_preference(exercise, preferred_equipment):
+        score += 6
+
+    if prescription_type in {"mobility", "stretch"}:
+        if exercise_matches_mobility_priority(exercise, mobility_priorities):
+            score += 12
+        elif mobility_priorities:
+            score -= 2
+
+    score += cardio_preference_bonus(exercise, cardio_preference)
+    score += strength_method_preference_bonus(exercise, strength_method_preference)
+
+    return score
+
+
+def recent_history_penalty(
+    exercise_name: str,
+    recent_counts: dict[str, int],
+    personalization: dict[str, Any],
+) -> float:
+    recent_count = recent_counts.get(exercise_name, 0)
+    variety_preference = personalization.get("exercise_variety_preference", "Balanced")
+
+    if variety_preference == "Higher variety":
+        return min(recent_count * 8, 35)
+
+    if variety_preference == "Repeat proven exercises":
+        return min(recent_count * 2, 10)
+
+    return min(recent_count * 5, 25)
+
+
 def score_exercise(
     exercise: dict[str, Any],
     desired_pattern: str,
@@ -181,8 +365,10 @@ def score_exercise(
     avoid_names: set[str],
     desired_session_slot: str | None = None,
     desired_method_tag: str | None = None,
+    personalization: dict[str, Any] | None = None,
 ) -> float:
     score = 0.0
+    personalization = personalization or get_personalization_settings()
 
     name = exercise.get("exercise_name", "")
     movement_pattern = exercise.get("movement_pattern", "")
@@ -227,12 +413,11 @@ def score_exercise(
     score += technical_transfer * 3
     score += method_bonus(exercise, readiness_category)
     score += modifier_bonus(exercise, workout_modifier)
+    score += personalization_bonus(exercise, personalization)
 
     score -= fatigue_penalty_for_readiness(exercise.get("fatigue_cost", "medium"), readiness_category)
     score -= joint_stress_penalty(exercise.get("joint_stress", "medium"), readiness_category)
-
-    recent_count = recent_counts.get(name, 0)
-    score -= min(recent_count * 5, 25)
+    score -= recent_history_penalty(str(name), recent_counts, personalization)
 
     fatigue_points = int(exercise.get("fatigue_points", 3))
 
@@ -278,11 +463,18 @@ def select_exercise(
 ) -> dict[str, Any]:
     catalog = get_exercise_catalog()
     recent_counts = get_recent_exercise_counts()
+    personalization = get_personalization_settings()
+
     avoid = avoid_names or set()
+    user_avoided = set(personalization.get("avoided_exercises", []))
+    combined_avoid = set(avoid).union(user_avoided)
 
     candidates = []
 
     for exercise in catalog:
+        if exercise.get("exercise_name") in user_avoided:
+            continue
+
         if allowed_categories and exercise.get("exercise_category") not in allowed_categories:
             continue
 
@@ -324,13 +516,15 @@ def select_exercise(
             exercise
             for exercise in catalog
             if exercise.get("session_slot") == desired_session_slot
+            and exercise.get("exercise_name") not in user_avoided
         ]
 
     if not candidates:
         candidates = [
             exercise
             for exercise in catalog
-            if not allowed_categories or exercise.get("exercise_category") in allowed_categories
+            if (not allowed_categories or exercise.get("exercise_category") in allowed_categories)
+            and exercise.get("exercise_name") not in user_avoided
         ]
 
     if not candidates:
@@ -346,9 +540,10 @@ def select_exercise(
             focus=focus,
             workout_modifier=workout_modifier,
             recent_counts=recent_counts,
-            avoid_names=avoid,
+            avoid_names=combined_avoid,
             desired_session_slot=desired_session_slot,
             desired_method_tag=desired_method_tag,
+            personalization=personalization,
         )
         scored.append((score, exercise))
 
@@ -362,6 +557,7 @@ def select_exercise(
         focus,
         desired_session_slot,
         desired_method_tag,
+        personalization,
     )
 
     return selected
@@ -418,6 +614,7 @@ def substitute_exercise(
 ) -> dict[str, Any]:
     catalog = get_exercise_catalog()
     recent_counts = get_recent_exercise_counts()
+    personalization = get_personalization_settings()
 
     current_name = current_exercise.get("exercise_name", "")
     current_pattern = current_exercise.get("movement_pattern", "")
@@ -429,8 +626,11 @@ def substitute_exercise(
     current_group = current_exercise.get("substitution_group", "")
     current_modality_group = current_exercise.get("modality_group", "")
 
+    user_avoided = set(personalization.get("avoided_exercises", []))
+
     avoid_names = {current_name}
     avoid_names.update([exercise.get("exercise_name", "") for exercise in current_workout_exercises])
+    avoid_names.update(user_avoided)
 
     candidates = []
 
@@ -486,6 +686,14 @@ def substitute_exercise(
             exercise
             for exercise in catalog
             if exercise["exercise_name"] != current_name
+            and exercise["exercise_name"] not in user_avoided
+        ]
+
+    if not candidates:
+        candidates = [
+            exercise
+            for exercise in catalog
+            if exercise["exercise_name"] != current_name
         ]
 
     scored = []
@@ -504,6 +712,7 @@ def substitute_exercise(
             avoid_names=avoid_names,
             desired_session_slot=desired_slot,
             desired_method_tag=None,
+            personalization=personalization,
         )
 
         if substitution_type == "modality":
@@ -546,6 +755,7 @@ def substitute_exercise(
         focus,
         replacement.get("session_slot"),
         replacement.get("method_tag"),
+        personalization,
     )
 
     return replacement
@@ -584,20 +794,46 @@ def build_selection_reason(
     focus: str,
     desired_session_slot: str | None,
     desired_method_tag: str | None,
+    personalization: dict[str, Any] | None = None,
 ) -> str:
+    personalization = personalization or get_personalization_settings()
     reasons = []
 
+    name = exercise.get("exercise_name", "")
     session_slot = exercise.get("session_slot", "")
     method_tag = exercise.get("method_tag", "")
     fatigue_points = int(exercise.get("fatigue_points", 3))
     combat_transfer = exercise.get("combat_transfer", "")
     technical_transfer = exercise.get("technical_transfer", "")
+    prescription_type = normalize_text(exercise.get("prescription_type", ""))
+
+    favorites = set(personalization.get("favorite_exercises", []))
 
     if desired_session_slot and session_slot == desired_session_slot:
         reasons.append(f"matched the {desired_session_slot.replace('_', ' ')} slot")
 
     if desired_method_tag and method_tag == desired_method_tag:
         reasons.append(f"matched the {desired_method_tag.replace('_', ' ')} method")
+
+    if name in favorites:
+        reasons.append("it is one of your favorite exercises")
+
+    if equipment_matches_preference(exercise, personalization.get("preferred_equipment", [])):
+        reasons.append("it uses preferred equipment")
+
+    if prescription_type in {"mobility", "stretch"} and exercise_matches_mobility_priority(
+        exercise,
+        personalization.get("mobility_priorities", []),
+    ):
+        reasons.append("it matches your mobility priorities")
+
+    cardio_pref = personalization.get("cardio_preference", "Mixed")
+    if cardio_preference_bonus(exercise, cardio_pref) >= 8:
+        reasons.append(f"it fits your {str(cardio_pref).lower()} cardio preference")
+
+    strength_pref = personalization.get("strength_method_preference", "App decides")
+    if strength_method_preference_bonus(exercise, strength_pref) >= 8:
+        reasons.append(f"it fits your {str(strength_pref).lower()} strength preference")
 
     if combat_transfer == "high":
         reasons.append("high combat transfer")
@@ -615,6 +851,6 @@ def build_selection_reason(
         reasons.append(f"fits {focus.lower()} focus")
 
     if not reasons:
-        reasons.append("best available match based on readiness, focus, and recent exercise history")
+        reasons.append("best available match based on readiness, focus, preferences, and recent exercise history")
 
     return "Selected because it " + ", ".join(reasons) + "."
