@@ -7,6 +7,7 @@ from src.database import (
     get_progression_state,
     get_completed_workout_count,
     get_setting,
+    get_personalization_settings,
 )
 from src.exercise_selector import select_exercise
 
@@ -122,6 +123,8 @@ def safe_main_lift_load(
 
 
 def generate_workout(checkin: dict[str, Any]) -> dict[str, Any]:
+    personalization = get_personalization_settings()
+
     readiness_category = checkin.get("readiness_category", "Yellow")
     time_available = int(checkin.get("time_available", 60))
     goal_today = checkin.get("goal_today", "normal")
@@ -168,6 +171,7 @@ def generate_workout(checkin: dict[str, Any]) -> dict[str, Any]:
         template_key=template_key,
         deload=deload,
         session_type=session_type,
+        personalization=personalization,
     )
 
     fatigue_budget = get_fatigue_budget(
@@ -179,6 +183,7 @@ def generate_workout(checkin: dict[str, Any]) -> dict[str, Any]:
         deload=deload,
         workout_modifier=workout_modifier,
         session_type=session_type,
+        personalization=personalization,
     )
 
     exercises = build_workout_from_slots(
@@ -217,6 +222,7 @@ def generate_workout(checkin: dict[str, Any]) -> dict[str, Any]:
         deload=deload,
         exercises=exercises,
         session_type=session_type,
+        personalization=personalization,
     )
 
     return {
@@ -310,54 +316,60 @@ def get_fatigue_budget(
     deload: bool,
     workout_modifier: str,
     session_type: str,
+    personalization: dict[str, Any] | None = None,
 ) -> int:
+    personalization = personalization or get_personalization_settings()
+
     if session_type == "Post-Workout Stretch / Mobility":
-        return 10 if time_available <= 30 else 14
-
-    if session_type == "Mobility & Stretch Only":
-        return 12 if time_available <= 30 else 16
-
-    if session_type == "Technical Cardio / Footwork":
-        return 12 if time_available <= 30 else 18
-
-    if readiness_category == "Green":
-        budget = 30
-    elif readiness_category == "Yellow":
-        budget = 23
-    elif readiness_category == "Orange":
-        budget = 15
+        budget = 10 if time_available <= 30 else 14
+    elif session_type == "Mobility & Stretch Only":
+        budget = 12 if time_available <= 30 else 16
+    elif session_type == "Technical Cardio / Footwork":
+        budget = 12 if time_available <= 30 else 18
     else:
-        budget = 10
+        if readiness_category == "Green":
+            budget = 30
+        elif readiness_category == "Yellow":
+            budget = 23
+        elif readiness_category == "Orange":
+            budget = 15
+        else:
+            budget = 10
 
-    if goal_today == "push":
-        budget += 4
-    elif goal_today == "maintain":
-        budget -= 2
-    elif goal_today == "recovery":
-        budget -= 5
+        if goal_today == "push":
+            budget += 4
+        elif goal_today == "maintain":
+            budget -= 2
+        elif goal_today == "recovery":
+            budget -= 5
 
-    if time_available <= 30:
-        budget -= 6
-    elif time_available <= 45:
-        budget -= 2
-    elif time_available >= 75:
-        budget += 5
+        if time_available <= 30:
+            budget -= 6
+        elif time_available <= 45:
+            budget -= 2
+        elif time_available >= 75:
+            budget += 5
 
-    if combat_later_today:
-        budget -= 5
+        if combat_later_today:
+            budget -= 5
 
-    if hard_sparring_last_24h:
-        budget -= 4
+        if hard_sparring_last_24h:
+            budget -= 4
 
-    if deload:
-        budget -= 7
+        if deload:
+            budget -= 7
 
-    if workout_modifier == "focus":
-        budget -= 3
-    elif workout_modifier == "fun":
-        budget += 2
-    elif workout_modifier == "chaos":
-        budget += 1
+        if workout_modifier == "focus":
+            budget -= 3
+        elif workout_modifier == "fun":
+            budget += 2
+        elif workout_modifier == "chaos":
+            budget += 1
+
+    fatigue_cap = int(personalization.get("max_session_fatigue_preference", 0) or 0)
+
+    if fatigue_cap > 0:
+        budget = min(budget, fatigue_cap)
 
     return max(6, budget)
 
@@ -384,6 +396,45 @@ def slot(
     }
 
 
+def get_strength_preference(personalization: dict[str, Any]) -> str:
+    return str(personalization.get("strength_method_preference", "App decides"))
+
+
+def prefers_isometrics(personalization: dict[str, Any]) -> bool:
+    return get_strength_preference(personalization) == "Isometrics"
+
+
+def prefers_conjugate(personalization: dict[str, Any]) -> bool:
+    return get_strength_preference(personalization) == "Conjugate-inspired"
+
+
+def prefers_standard_strength(personalization: dict[str, Any]) -> bool:
+    return get_strength_preference(personalization) == "Standard strength"
+
+
+def prefers_repeated_effort(personalization: dict[str, Any]) -> bool:
+    return get_strength_preference(personalization) == "Repeated effort"
+
+
+def get_cardio_preference(personalization: dict[str, Any]) -> str:
+    return str(personalization.get("cardio_preference", "Mixed"))
+
+
+def preferred_cardio_session_slot(personalization: dict[str, Any]) -> str:
+    cardio_preference = get_cardio_preference(personalization)
+
+    if cardio_preference == "Technical combat":
+        return "technical_cardio"
+
+    if cardio_preference == "Machine":
+        return "zone2_cardio"
+
+    if cardio_preference == "Low impact":
+        return "zone2_cardio"
+
+    return "technical_cardio"
+
+
 def build_slot_plan(
     checkin: dict[str, Any],
     focus: str,
@@ -393,26 +444,29 @@ def build_slot_plan(
     template_key: str,
     deload: bool,
     session_type: str,
+    personalization: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    personalization = personalization or get_personalization_settings()
+
     soreness = int(checkin.get("soreness", 5))
     combat_later_today = bool(checkin.get("combat_later_today", False))
     combat_last_24h = bool(checkin.get("combat_last_24h", False))
     hard_sparring_last_24h = bool(checkin.get("hard_sparring_last_24h", False))
 
     if session_type == "Post-Workout Stretch / Mobility":
-        return post_workout_mobility_slot_plan(workout_modifier)
+        return post_workout_mobility_slot_plan(workout_modifier, personalization)
 
     if session_type == "Mobility & Stretch Only":
-        return recovery_slot_plan(workout_modifier)
+        return recovery_slot_plan(workout_modifier, personalization)
 
     if session_type == "Technical Cardio / Footwork":
-        return technical_cardio_slot_plan(workout_modifier)
+        return technical_cardio_slot_plan(workout_modifier, personalization)
 
     if template_key == "recovery" or readiness_category == "Red" or goal_today == "recovery":
-        return recovery_slot_plan(workout_modifier)
+        return recovery_slot_plan(workout_modifier, personalization)
 
     if deload:
-        return deload_slot_plan(focus, workout_modifier)
+        return deload_slot_plan(focus, workout_modifier, personalization)
 
     if readiness_category == "Orange" or soreness >= 8 or hard_sparring_last_24h:
         return light_slot_plan(
@@ -420,10 +474,11 @@ def build_slot_plan(
             workout_modifier=workout_modifier,
             combat_later_today=combat_later_today,
             combat_last_24h=combat_last_24h,
+            personalization=personalization,
         )
 
     if template_key == "accessory" or focus == "Accessory / pump":
-        return accessory_slot_plan(workout_modifier)
+        return accessory_slot_plan(workout_modifier, personalization)
 
     if focus == "Lower emphasis":
         return lower_strength_slot_plan(
@@ -431,6 +486,7 @@ def build_slot_plan(
             goal_today=goal_today,
             workout_modifier=workout_modifier,
             combat_later_today=combat_later_today,
+            personalization=personalization,
         )
 
     if focus == "Upper emphasis":
@@ -439,6 +495,7 @@ def build_slot_plan(
             goal_today=goal_today,
             workout_modifier=workout_modifier,
             combat_later_today=combat_later_today,
+            personalization=personalization,
         )
 
     if focus == "Posterior chain / grappling":
@@ -447,6 +504,7 @@ def build_slot_plan(
             goal_today=goal_today,
             workout_modifier=workout_modifier,
             combat_later_today=combat_later_today,
+            personalization=personalization,
         )
 
     return full_body_slot_plan(
@@ -454,6 +512,7 @@ def build_slot_plan(
         goal_today=goal_today,
         workout_modifier=workout_modifier,
         combat_later_today=combat_later_today,
+        personalization=personalization,
     )
 
 
@@ -462,9 +521,21 @@ def full_body_slot_plan(
     goal_today: str,
     workout_modifier: str,
     combat_later_today: bool,
+    personalization: dict[str, Any],
 ) -> list[dict[str, Any]]:
     use_isometric = readiness_category == "Yellow" or combat_later_today
     use_dynamic = readiness_category == "Green" and goal_today == "push" and not combat_later_today
+
+    if prefers_isometrics(personalization):
+        use_isometric = True
+        use_dynamic = False
+
+    if prefers_conjugate(personalization) and readiness_category == "Green" and not combat_later_today:
+        use_dynamic = True
+
+    if prefers_standard_strength(personalization):
+        use_isometric = False
+        use_dynamic = False
 
     plan = [
         slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
@@ -489,8 +560,8 @@ def full_body_slot_plan(
         ]
     )
 
-    if workout_modifier in {"fun", "chaos"}:
-        plan.append(slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], priority=9))
+    if workout_modifier in {"fun", "chaos"} or get_cardio_preference(personalization) == "Technical combat":
+        plan.append(slot("Technical Cardio", "conditioning", preferred_cardio_session_slot(personalization), "skill_conditioning", ["cardio"], priority=9))
 
     return plan
 
@@ -500,9 +571,21 @@ def lower_strength_slot_plan(
     goal_today: str,
     workout_modifier: str,
     combat_later_today: bool,
+    personalization: dict[str, Any],
 ) -> list[dict[str, Any]]:
     use_isometric = combat_later_today or readiness_category == "Yellow"
     use_dynamic = readiness_category == "Green" and goal_today == "push" and not combat_later_today
+
+    if prefers_isometrics(personalization):
+        use_isometric = True
+        use_dynamic = False
+
+    if prefers_conjugate(personalization) and readiness_category == "Green" and not combat_later_today:
+        use_dynamic = True
+
+    if prefers_standard_strength(personalization):
+        use_isometric = False
+        use_dynamic = False
 
     plan = [
         slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
@@ -538,8 +621,15 @@ def upper_strength_slot_plan(
     goal_today: str,
     workout_modifier: str,
     combat_later_today: bool,
+    personalization: dict[str, Any],
 ) -> list[dict[str, Any]]:
     use_isometric = combat_later_today or readiness_category == "Yellow"
+
+    if prefers_isometrics(personalization):
+        use_isometric = True
+
+    if prefers_standard_strength(personalization):
+        use_isometric = False
 
     plan = [
         slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
@@ -561,8 +651,8 @@ def upper_strength_slot_plan(
         ]
     )
 
-    if workout_modifier in {"fun", "chaos"}:
-        plan.append(slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], priority=9))
+    if workout_modifier in {"fun", "chaos"} or get_cardio_preference(personalization) == "Technical combat":
+        plan.append(slot("Technical Cardio", "conditioning", preferred_cardio_session_slot(personalization), "skill_conditioning", ["cardio"], priority=9))
 
     return plan
 
@@ -572,9 +662,21 @@ def grappling_strength_slot_plan(
     goal_today: str,
     workout_modifier: str,
     combat_later_today: bool,
+    personalization: dict[str, Any],
 ) -> list[dict[str, Any]]:
     use_isometric = readiness_category == "Yellow" or combat_later_today
     use_dynamic = readiness_category == "Green" and goal_today == "push" and not combat_later_today
+
+    if prefers_isometrics(personalization):
+        use_isometric = True
+        use_dynamic = False
+
+    if prefers_conjugate(personalization) and readiness_category == "Green" and not combat_later_today:
+        use_dynamic = True
+
+    if prefers_standard_strength(personalization):
+        use_isometric = False
+        use_dynamic = False
 
     plan = [
         slot("Grappling Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
@@ -600,16 +702,21 @@ def grappling_strength_slot_plan(
         ]
     )
 
-    if workout_modifier in {"fun", "chaos"}:
-        plan.append(slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], priority=10))
+    if workout_modifier in {"fun", "chaos"} or get_cardio_preference(personalization) == "Technical combat":
+        plan.append(slot("Technical Cardio", "conditioning", preferred_cardio_session_slot(personalization), "skill_conditioning", ["cardio"], priority=10))
 
     return plan
 
 
-def accessory_slot_plan(workout_modifier: str) -> list[dict[str, Any]]:
+def accessory_slot_plan(workout_modifier: str, personalization: dict[str, Any]) -> list[dict[str, Any]]:
+    primary_method = "repeated_effort"
+
+    if prefers_isometrics(personalization):
+        primary_method = "yielding_isometric"
+
     plan = [
         slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
-        slot("Upper Back", "horizontal_pull", "upper_back_accessory", "repeated_effort", ["secondary_lift", "accessory"], required=True, priority=2),
+        slot("Upper Back", "horizontal_pull", "upper_back_accessory", primary_method, ["secondary_lift", "accessory"], required=True, priority=2),
         slot("Posterior Chain", "posterior_chain", "posterior_chain_accessory", "repeated_effort", ["accessory"], required=True, priority=3),
         slot("Shoulders", "shoulder_accessory", "shoulder_accessory", "repeated_effort", ["accessory"], priority=4),
         slot("Arms / Grip", "forearm_grip", "arm_grip_accessory", "repeated_effort", ["accessory"], priority=5),
@@ -619,8 +726,8 @@ def accessory_slot_plan(workout_modifier: str) -> list[dict[str, Any]]:
         slot("Mobility Finish", "mobility", "upper_body_mobility", "recovery", ["mobility", "stretch"], priority=9),
     ]
 
-    if workout_modifier in {"fun", "chaos"}:
-        plan.append(slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], priority=10))
+    if workout_modifier in {"fun", "chaos"} or get_cardio_preference(personalization) == "Technical combat":
+        plan.append(slot("Technical Cardio", "conditioning", preferred_cardio_session_slot(personalization), "skill_conditioning", ["cardio"], priority=10))
 
     return plan
 
@@ -630,10 +737,13 @@ def light_slot_plan(
     workout_modifier: str,
     combat_later_today: bool,
     combat_last_24h: bool,
+    personalization: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    cardio_slot = preferred_cardio_session_slot(personalization)
+
     return [
         slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
-        slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], required=True, priority=2),
+        slot("Technical Cardio", "conditioning", cardio_slot, "skill_conditioning", ["cardio"], required=True, priority=2),
         slot("Upper Back", "horizontal_pull", "upper_back_accessory", "repeated_effort", ["accessory", "secondary_lift"], priority=3),
         slot("Posterior Chain Blood Flow", "posterior_chain", "posterior_chain_blood_flow", "repeated_effort", ["accessory"], priority=4),
         slot("Core Breathing", "core", "core_breathing", "recovery", ["recovery_accessory"], priority=5),
@@ -643,7 +753,11 @@ def light_slot_plan(
     ]
 
 
-def deload_slot_plan(focus: str, workout_modifier: str) -> list[dict[str, Any]]:
+def deload_slot_plan(
+    focus: str,
+    workout_modifier: str,
+    personalization: dict[str, Any],
+) -> list[dict[str, Any]]:
     return [
         slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
         slot("Low-Fatigue Strength", "horizontal_pull", "upper_back_accessory", "repeated_effort", ["accessory", "secondary_lift"], required=True, priority=2),
@@ -656,7 +770,9 @@ def deload_slot_plan(focus: str, workout_modifier: str) -> list[dict[str, Any]]:
     ]
 
 
-def recovery_slot_plan(workout_modifier: str) -> list[dict[str, Any]]:
+def recovery_slot_plan(workout_modifier: str, personalization: dict[str, Any]) -> list[dict[str, Any]]:
+    cardio_slot = preferred_cardio_session_slot(personalization)
+
     plan = [
         slot("Easy Cardio", "conditioning", "zone2_cardio", "recovery", ["cardio"], required=True, priority=1),
         slot("Hip Mobility", "mobility", "hip_controlled_mobility", "mobility_control", ["mobility"], required=True, priority=2),
@@ -669,8 +785,8 @@ def recovery_slot_plan(workout_modifier: str) -> list[dict[str, Any]]:
         slot("Positional Breathing", "mobility", "positional_breathing", "recovery", ["mobility"], priority=9),
     ]
 
-    if workout_modifier in {"fun", "chaos"}:
-        plan.insert(1, slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], priority=2))
+    if workout_modifier in {"fun", "chaos"} or cardio_slot == "technical_cardio":
+        plan.insert(1, slot("Technical Cardio", "conditioning", cardio_slot, "skill_conditioning", ["cardio"], priority=2))
 
     if workout_modifier == "focus":
         return [item for item in plan if item["priority"] <= 6]
@@ -678,7 +794,10 @@ def recovery_slot_plan(workout_modifier: str) -> list[dict[str, Any]]:
     return plan
 
 
-def post_workout_mobility_slot_plan(workout_modifier: str) -> list[dict[str, Any]]:
+def post_workout_mobility_slot_plan(
+    workout_modifier: str,
+    personalization: dict[str, Any],
+) -> list[dict[str, Any]]:
     return [
         slot("Downshift Breathing", "mobility", "positional_breathing", "recovery", ["mobility"], required=True, priority=1),
         slot("Hip Reset", "mobility", "hip_controlled_mobility", "mobility_control", ["mobility"], required=True, priority=2),
@@ -690,9 +809,14 @@ def post_workout_mobility_slot_plan(workout_modifier: str) -> list[dict[str, Any
     ]
 
 
-def technical_cardio_slot_plan(workout_modifier: str) -> list[dict[str, Any]]:
+def technical_cardio_slot_plan(
+    workout_modifier: str,
+    personalization: dict[str, Any],
+) -> list[dict[str, Any]]:
+    cardio_slot = preferred_cardio_session_slot(personalization)
+
     return [
-        slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], required=True, priority=1),
+        slot("Technical Cardio", "conditioning", cardio_slot, "skill_conditioning", ["cardio"], required=True, priority=1),
         slot("Footwork Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], priority=2),
         slot("Hip Mobility", "mobility", "hip_controlled_mobility", "mobility_control", ["mobility"], priority=3),
         slot("T-Spine Mobility", "mobility", "t_spine_mobility", "mobility_control", ["mobility"], priority=4),
@@ -859,6 +983,9 @@ def determine_workout_type(
     if "dynamic_effort" in method_tags:
         return "Dynamic Effort / Athletic Strength"
 
+    if "repeated_effort" in method_tags and focus == "Accessory / pump":
+        return "Repeated Effort / Armor Building"
+
     if focus == "Accessory / pump":
         return "Accessory / Armor Building"
 
@@ -878,7 +1005,10 @@ def build_generation_reason(
     deload: bool,
     exercises: list[dict[str, Any]],
     session_type: str,
+    personalization: dict[str, Any] | None = None,
 ) -> str:
+    personalization = personalization or get_personalization_settings()
+
     estimated_fatigue = sum(int(exercise.get("fatigue_points", 3)) for exercise in exercises)
 
     reason = (
@@ -887,6 +1017,25 @@ def build_generation_reason(
     )
 
     reason += f"Readiness is {readiness_category}, focus is {focus}, and goal today is {goal_today}. "
+
+    strength_pref = personalization.get("strength_method_preference", "App decides")
+    cardio_pref = personalization.get("cardio_preference", "Mixed")
+    variety_pref = personalization.get("exercise_variety_preference", "Balanced")
+    fatigue_cap = int(personalization.get("max_session_fatigue_preference", 0) or 0)
+
+    if strength_pref != "App decides":
+        reason += f"Your strength preference is {str(strength_pref).lower()}, so matching methods were favored when appropriate. "
+
+    if cardio_pref != "App decides":
+        reason += f"Your cardio preference is {str(cardio_pref).lower()}, so conditioning selections were biased accordingly. "
+
+    if variety_pref == "Higher variety":
+        reason += "Your variety setting increases the penalty for recently used exercises. "
+    elif variety_pref == "Repeat proven exercises":
+        reason += "Your variety setting allows proven exercises to repeat more often. "
+
+    if fatigue_cap > 0:
+        reason += f"Your personal fatigue cap is {fatigue_cap}, so the session budget was limited if needed. "
 
     if session_type == "Post-Workout Stretch / Mobility":
         reason += "Because this is a second session, the app biased downregulation, mobility, breathing, and low-fatigue tissue work. "
