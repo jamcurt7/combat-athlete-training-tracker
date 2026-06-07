@@ -104,7 +104,7 @@ def adjust_rpe(key: str, amount: float) -> None:
 def clear_set_state_for_exercise(exercise_index: int) -> None:
     keys_to_delete = []
 
-    for key in st.session_state.keys():
+    for key in list(st.session_state.keys()):
         if key.startswith(f"active_weight_{exercise_index}_"):
             keys_to_delete.append(key)
         if key.startswith(f"active_reps_{exercise_index}_"):
@@ -154,18 +154,39 @@ default_bodyweight = float(get_setting("current_bodyweight", 218))
 if active_step == 1:
     st.subheader("Daily Check-In")
 
+    if "latest_workout" in st.session_state:
+        if st.session_state.get("workout_saved", False):
+            st.success("Your previous session is saved. You can start another session today.")
+            if st.button("Start Another Session Today", use_container_width=True):
+                clear_active_workout()
+                st.session_state["workout_flow_step"] = 1
+                st.rerun()
+        else:
+            st.info("You already have an active generated workout. Save it or clear it before generating a new one.")
+            if st.button("Clear Active Workout", use_container_width=True):
+                clear_active_workout()
+                st.rerun()
+            st.stop()
+
     st.write(
-        "Answer honestly. The app uses this to decide whether today should be a push, normal, light, or recovery session."
+        "Answer honestly. The app uses this to decide whether today should be a push, normal, light, recovery, technical, or stretching session."
     )
 
-    if "latest_workout" in st.session_state:
-        st.info("You already have an active generated workout. Save it or clear it before generating a new one.")
-
-        if st.button("Clear Active Workout", use_container_width=True):
-            clear_active_workout()
-            st.rerun()
-
     with st.form("daily_checkin_form"):
+        st.markdown("### Session Type")
+
+        session_type = st.selectbox(
+            "What are you starting?",
+            [
+                "Main Workout",
+                "Post-Workout Stretch / Mobility",
+                "Mobility & Stretch Only",
+                "Technical Cardio / Footwork",
+            ],
+            index=0,
+            help="Use Post-Workout Stretch / Mobility if you already trained earlier and want an intelligent second session.",
+        )
+
         st.markdown("### Body & Recovery")
 
         col1, col2 = st.columns(2)
@@ -224,17 +245,30 @@ if active_step == 1:
             )
 
         with col4:
+            if session_type == "Post-Workout Stretch / Mobility":
+                time_options = [15, 20, 30, 45]
+                time_default_index = 2
+            elif session_type == "Mobility & Stretch Only":
+                time_options = [20, 30, 45, 60]
+                time_default_index = 1
+            elif session_type == "Technical Cardio / Footwork":
+                time_options = [15, 20, 30, 45]
+                time_default_index = 2
+            else:
+                time_options = [30, 45, 60, 75]
+                time_default_index = 2
+
             time_available = st.selectbox(
                 "Time available today",
-                [30, 45, 60, 75],
-                index=2,
+                time_options,
+                index=time_default_index,
                 help="Choose the closest option in minutes.",
             )
 
             goal_today = st.selectbox(
                 "Goal for today",
                 ["push", "normal", "maintain", "recovery"],
-                index=1,
+                index=1 if session_type == "Main Workout" else 3,
             )
 
             fun_workout = st.checkbox("Fun workout")
@@ -288,9 +322,12 @@ if active_step == 1:
         checkin["readiness_score"] = readiness_score
         checkin["readiness_category"] = readiness_category
 
+        checkin_for_generator = checkin.copy()
+        checkin_for_generator["session_type"] = session_type
+
         checkin_id = insert_checkin(checkin)
 
-        workout = generate_workout(checkin)
+        workout = generate_workout(checkin_for_generator)
 
         workout_id = insert_workout_session(
             {
@@ -309,7 +346,7 @@ if active_step == 1:
         for exercise_item in workout["exercises"]:
             insert_planned_exercise(workout_id, exercise_item)
 
-        st.session_state["latest_checkin"] = checkin
+        st.session_state["latest_checkin"] = checkin_for_generator
         st.session_state["latest_checkin_id"] = checkin_id
         st.session_state["latest_workout"] = workout
         st.session_state["latest_workout_id"] = workout_id
@@ -345,7 +382,7 @@ elif active_step == 2:
 
         st.subheader("Workout Overview")
 
-        col_a, col_b, col_c = st.columns(3)
+        col_a, col_b, col_c, col_d = st.columns(4)
 
         with col_a:
             st.metric("Workout Type", workout["workout_type"])
@@ -356,9 +393,13 @@ elif active_step == 2:
         with col_c:
             st.metric("Duration", f"{workout['estimated_duration']} min")
 
+        with col_d:
+            st.metric("Fatigue", f"{workout.get('estimated_fatigue', 0)} / {workout.get('fatigue_budget', '—')}")
+
         st.info(workout["generation_reason"])
 
         st.caption(
+            f"Session: {workout.get('session_type', 'Main Workout')} | "
             f"Template bias: {workout.get('template_key', 'balanced')} | "
             f"Modifier: {workout.get('workout_modifier', 'normal')}"
         )
@@ -369,6 +410,12 @@ elif active_step == 2:
 
         for index, exercise_item in enumerate(workout["exercises"], start=1):
             compact_exercise_card(exercise_item, index)
+
+            if exercise_item.get("selected_for_slot"):
+                st.caption(f"Selected for: {exercise_item.get('selected_for_slot')}")
+
+            if exercise_item.get("selection_reason"):
+                st.caption(exercise_item.get("selection_reason"))
 
             sub_col1, sub_col2, sub_col3 = st.columns(3)
 
@@ -406,7 +453,10 @@ elif active_step == 2:
 
             display_columns = [
                 "exercise_name",
+                "selected_for_slot",
                 "movement_pattern",
+                "session_slot",
+                "method_tag",
                 "exercise_category",
                 "prescription_type",
                 "planned_sets",
@@ -414,6 +464,8 @@ elif active_step == 2:
                 "planned_reps_max",
                 "planned_weight",
                 "target_rpe",
+                "fatigue_points",
+                "selection_score",
                 "equipment",
                 "modality",
                 "notes",
@@ -610,7 +662,7 @@ elif active_step == 3:
 
         workout_notes = st.text_area(
             "Workout notes",
-            placeholder="Example: Felt strong, grip was tired, shortened accessories, etc.",
+            placeholder="Example: Felt strong, grip was tired, shortened accessories, stretched after workout, etc.",
         )
 
         finish_col1, finish_col2 = st.columns(2)
@@ -656,7 +708,7 @@ elif active_step == 4:
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("Start New Workout", use_container_width=True):
+        if st.button("Start Another Session Today", use_container_width=True):
             clear_active_workout()
             st.session_state["workout_flow_step"] = 1
             st.rerun()
