@@ -5,16 +5,24 @@ from src.database import (
     read_table,
     delete_workout,
     delete_checkin,
+    get_active_user_id,
+    get_user_by_id,
 )
+from src.ui import page_header
 
 
 st.set_page_config(page_title="Workout History", page_icon="📋", layout="wide")
 
 init_db()
 
-st.title("Workout History")
+active_user_id = get_active_user_id()
+active_user = get_user_by_id(active_user_id)
+active_name = active_user["display_name"] if active_user else "User"
 
-st.write("Review saved workouts, planned exercises, completed sets, check-ins, and progression state.")
+page_header(
+    "Workout History",
+    f"Review saved workouts, planned exercises, completed sets, check-ins, and progression state for {active_name}.",
+)
 
 tabs = st.tabs(
     [
@@ -28,12 +36,12 @@ tabs = st.tabs(
 )
 
 with tabs[0]:
-    st.subheader("Workout Sessions")
+    st.subheader(f"Workout Sessions — {active_name}")
 
     sessions = read_table("workout_sessions")
 
     if sessions.empty:
-        st.info("No workout sessions saved yet.")
+        st.info("No workout sessions saved yet for this profile.")
     else:
         st.dataframe(
             sessions.sort_values("id", ascending=False),
@@ -42,12 +50,12 @@ with tabs[0]:
         )
 
 with tabs[1]:
-    st.subheader("Completed Sets")
+    st.subheader(f"Completed Sets — {active_name}")
 
     sets = read_table("completed_sets")
 
     if sets.empty:
-        st.info("No completed sets logged yet.")
+        st.info("No completed sets logged yet for this profile.")
     else:
         exercise_options = ["All"] + sorted(sets["exercise_name"].dropna().unique().tolist())
         selected_exercise = st.selectbox("Filter by exercise", exercise_options)
@@ -64,12 +72,12 @@ with tabs[1]:
         )
 
 with tabs[2]:
-    st.subheader("Planned Exercises")
+    st.subheader(f"Planned Exercises — {active_name}")
 
     planned = read_table("planned_exercises")
 
     if planned.empty:
-        st.info("No planned exercises saved yet.")
+        st.info("No planned exercises saved yet for this profile.")
     else:
         st.dataframe(
             planned.sort_values("id", ascending=False),
@@ -78,12 +86,12 @@ with tabs[2]:
         )
 
 with tabs[3]:
-    st.subheader("Daily Check-Ins")
+    st.subheader(f"Daily Check-Ins — {active_name}")
 
     checkins = read_table("daily_checkins")
 
     if checkins.empty:
-        st.info("No daily check-ins saved yet.")
+        st.info("No daily check-ins saved yet for this profile.")
     else:
         st.dataframe(
             checkins.sort_values("id", ascending=False),
@@ -92,12 +100,12 @@ with tabs[3]:
         )
 
 with tabs[4]:
-    st.subheader("Progression State")
+    st.subheader(f"Progression State — {active_name}")
 
     progression = read_table("progression_state")
 
     if progression.empty:
-        st.info("No progression state available yet.")
+        st.info("No progression state available yet for this profile.")
     else:
         st.dataframe(
             progression,
@@ -106,10 +114,11 @@ with tabs[4]:
         )
 
 with tabs[5]:
-    st.subheader("Cleanup Tools")
+    st.subheader(f"Cleanup Tools — {active_name}")
 
     st.warning(
-        "Use this if you accidentally generated test workouts or check-ins. Deleting a workout also deletes its planned exercises and completed sets."
+        "Use this if you accidentally generated test workouts or check-ins. "
+        "Deleting a workout also deletes its planned exercises and completed sets for the active profile."
     )
 
     sessions = read_table("workout_sessions")
@@ -121,7 +130,7 @@ with tabs[5]:
         st.markdown("### Delete Workout")
 
         if sessions.empty:
-            st.info("No workouts to delete.")
+            st.info("No workouts to delete for this profile.")
         else:
             workout_options = sessions.sort_values("id", ascending=False).copy()
             workout_options["label"] = workout_options.apply(
@@ -146,14 +155,14 @@ with tabs[5]:
                 use_container_width=True,
             ):
                 delete_workout(selected_workout_id)
-                st.success(f"Workout {selected_workout_id} deleted.")
+                st.success(f"Workout {selected_workout_id} deleted for {active_name}.")
                 st.rerun()
 
     with col2:
         st.markdown("### Delete Check-In")
 
         if checkins.empty:
-            st.info("No check-ins to delete.")
+            st.info("No check-ins to delete for this profile.")
         else:
             checkin_options = checkins.sort_values("id", ascending=False).copy()
             checkin_options["label"] = checkin_options.apply(
@@ -178,5 +187,5 @@ with tabs[5]:
                 use_container_width=True,
             ):
                 delete_checkin(selected_checkin_id)
-                st.success(f"Check-in {selected_checkin_id} deleted.")
+                st.success(f"Check-in {selected_checkin_id} deleted for {active_name}.")
                 st.rerun()
