@@ -9,6 +9,11 @@ from src.database import (
     upsert_progression_state,
     get_personalization_settings,
     save_personalization_settings,
+    get_users,
+    create_user,
+    set_active_user,
+    get_active_user_id,
+    get_user_by_id,
 )
 from src.seed_data import seed_all
 from src.exercise_catalog import get_exercise_catalog
@@ -19,9 +24,13 @@ st.set_page_config(page_title="Settings", page_icon="⚙️", layout="wide")
 
 init_db()
 
+active_user_id = get_active_user_id()
+active_user = get_user_by_id(active_user_id)
+active_name = active_user["display_name"] if active_user else "User"
+
 page_header(
     "Settings",
-    "Edit your goals, training loads, personalization, and app data.",
+    f"Edit goals, training loads, personalization, users, and app data for {active_name}.",
 )
 
 app_storage_warning()
@@ -41,8 +50,46 @@ def clean_existing_selection(existing: list[str], options: list[str]) -> list[st
     return [item for item in existing if item in option_set]
 
 
+def render_profile_switcher() -> None:
+    users = get_users()
+
+    if users.empty:
+        st.warning("No profiles found.")
+        return
+
+    current_id = get_active_user_id()
+    user_ids = users["id"].astype(int).tolist()
+
+    if current_id not in user_ids:
+        current_id = user_ids[0]
+
+    current_index = user_ids.index(current_id)
+
+    labels = [
+        f"{row['display_name'] or row['name']}"
+        for _, row in users.iterrows()
+    ]
+
+    selected = st.selectbox(
+        "Active profile",
+        options=labels,
+        index=current_index,
+        key="settings_profile_switcher",
+    )
+
+    selected_row = users.iloc[labels.index(selected)]
+    selected_id = int(selected_row["id"])
+    selected_name = str(selected_row["display_name"] or selected_row["name"])
+
+    if selected_id != current_id:
+        set_active_user(selected_id, selected_name)
+        st.success(f"Switched to {selected_name}.")
+        st.rerun()
+
+
 tabs = st.tabs(
     [
+        "User Profiles",
         "Bodyweight & Goals",
         "Training Loads",
         "Personalization",
@@ -52,7 +99,67 @@ tabs = st.tabs(
 )
 
 with tabs[0]:
-    st.subheader("Bodyweight & Goal Settings")
+    st.subheader("User Profiles")
+
+    render_profile_switcher()
+
+    st.divider()
+
+    st.subheader("Create or Update Profile")
+
+    with st.form("create_user_form"):
+        profile_name = st.text_input(
+            "Profile name",
+            value="",
+            placeholder="Example: Cat",
+        )
+
+        display_name = st.text_input(
+            "Display name",
+            value="",
+            placeholder="Example: Cat",
+        )
+
+        profile_pin = st.text_input(
+            "Optional PIN",
+            value="",
+            type="password",
+            help="PIN support is stored but not enforced yet. We can enforce it in the next batch.",
+        )
+
+        save_profile = st.form_submit_button(
+            "Save Profile",
+            use_container_width=True,
+        )
+
+    if save_profile:
+        try:
+            new_user_id = create_user(
+                name=profile_name,
+                display_name=display_name or profile_name,
+                pin=profile_pin or None,
+            )
+            set_active_user(new_user_id, display_name or profile_name)
+            seed_all()
+            st.success(f"Profile saved and activated: {display_name or profile_name}")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Could not save profile: {e}")
+
+    st.divider()
+
+    st.subheader("Existing Profiles")
+
+    users_df = get_users()
+    st.dataframe(users_df, use_container_width=True, hide_index=True)
+
+    st.info(
+        "This is local profile separation, not full internet authentication. "
+        "It is appropriate for a private personal Streamlit app. Full login can come later if you ever make the app public."
+    )
+
+with tabs[1]:
+    st.subheader(f"Bodyweight & Goal Settings — {active_name}")
 
     current_bodyweight = float(get_setting("current_bodyweight", 218))
     goal_bodyweight = float(get_setting("goal_bodyweight", 200))
@@ -113,12 +220,12 @@ with tabs[0]:
         )
         st.metric("Remaining Cut", f"{round(weight_to_lose, 1)} lb")
 
-with tabs[1]:
-    st.subheader("Training Loads")
+with tabs[2]:
+    st.subheader(f"Training Loads — {active_name}")
 
     st.write(
         """
-        These are the current training loads used by the workout generator.
+        These are the current training loads used by the workout generator for the active profile.
         Keep these conservative. The progression engine will increase them slowly.
         """
     )
@@ -126,7 +233,7 @@ with tabs[1]:
     progression = read_table("progression_state")
 
     if progression.empty:
-        st.info("No progression data found. Use the seed button in Database Tools.")
+        st.info("No progression data found for this profile. Use Reseed Default Data in Database Tools.")
     else:
         edited_progression = st.data_editor(
             progression,
@@ -134,6 +241,7 @@ with tabs[1]:
             hide_index=True,
             num_rows="fixed",
             column_config={
+                "user_id": st.column_config.NumberColumn(disabled=True),
                 "exercise_name": st.column_config.TextColumn(disabled=True),
                 "movement_pattern": st.column_config.TextColumn(disabled=True),
                 "exercise_category": st.column_config.TextColumn(disabled=True),
@@ -171,14 +279,13 @@ with tabs[1]:
 
             st.success("Training loads saved.")
 
-with tabs[2]:
-    st.subheader("Personalization")
+with tabs[3]:
+    st.subheader(f"Personalization — {active_name}")
 
     st.write(
         """
-        These settings give the workout generator a long-term personality.
-        The daily check-in still controls readiness and intensity, but these settings influence exercise selection,
-        fatigue limits, mobility targets, cardio style, and training method bias.
+        These settings give the workout generator a long-term personality for the active profile.
+        The daily check-in still controls readiness and intensity.
         """
     )
 
@@ -255,7 +362,6 @@ with tabs[2]:
             if personalization.get("cardio_preference", "Mixed")
             in ["Mixed", "Technical combat", "Machine", "Low impact", "App decides"]
             else 0,
-            help="Technical combat biases shadow boxing, footwork, jump rope, and Muay Thai-style cardio.",
         )
 
         strength_method_preference = st.selectbox(
@@ -277,7 +383,6 @@ with tabs[2]:
             if personalization.get("strength_method_preference", "App decides")
             in ["App decides", "Standard strength", "Conjugate-inspired", "Isometrics", "Repeated effort"]
             else 0,
-            help="This does not force bad choices; it nudges the algorithm when readiness allows.",
         )
 
         exercise_variety_preference = st.selectbox(
@@ -295,7 +400,6 @@ with tabs[2]:
             if personalization.get("exercise_variety_preference", "Balanced")
             in ["Balanced", "Higher variety", "Repeat proven exercises"]
             else 0,
-            help="Higher variety increases the penalty for exercises used recently.",
         )
 
         max_session_fatigue_preference = st.slider(
@@ -366,7 +470,7 @@ with tabs[2]:
     with st.expander("View raw personalization settings"):
         st.json(latest)
 
-with tabs[3]:
+with tabs[4]:
     st.subheader("Exercise Library")
 
     exercises = read_table("exercise_library")
@@ -385,24 +489,24 @@ with tabs[3]:
             "The newer generator also uses the structured catalog in src/exercise_catalog.py."
         )
 
-with tabs[4]:
+with tabs[5]:
     st.subheader("Database Tools")
 
     st.warning(
-        "Be careful here. Resetting the database deletes your saved check-ins, workouts, sets, and progression data."
+        "Be careful here. Resetting the database deletes saved check-ins, workouts, sets, progression data, settings, and profiles."
     )
 
     col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("Reseed Default Data", use_container_width=True):
+        if st.button("Reseed Default Data For Active Profile", use_container_width=True):
             seed_all()
-            st.success("Default settings, exercises, and progression state reseeded.")
+            st.success(f"Default settings, exercises, and progression state reseeded for {active_name}.")
 
     with col2:
-        confirm_reset = st.checkbox("I understand reset deletes my app data.")
+        confirm_reset = st.checkbox("I understand reset deletes all app data for all profiles.")
 
-        if st.button("Reset Database", use_container_width=True, disabled=not confirm_reset):
+        if st.button("Reset Entire Database", use_container_width=True, disabled=not confirm_reset):
             reset_database()
             seed_all()
             st.success("Database reset and default data reseeded.")
@@ -412,6 +516,7 @@ with tabs[4]:
     st.subheader("Raw Table Counts")
 
     table_names = [
+        "users",
         "settings",
         "exercise_library",
         "daily_checkins",
@@ -425,9 +530,19 @@ with tabs[4]:
 
     for table in table_names:
         try:
-            df = read_table(table)
-            counts.append({"table": table, "rows": len(df)})
+            if table == "users" or table == "exercise_library":
+                df = read_table(table, include_all_users=True)
+            else:
+                df = read_table(table)
+            counts.append({"table": table, "rows_for_active_profile": len(df)})
         except Exception as e:
-            counts.append({"table": table, "rows": f"Error: {e}"})
+            counts.append({"table": table, "rows_for_active_profile": f"Error: {e}"})
 
     st.dataframe(counts, use_container_width=True, hide_index=True)
+
+    with st.expander("View all settings across all profiles"):
+        try:
+            all_settings = read_table("settings", include_all_users=True)
+            st.dataframe(all_settings, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error(e)
