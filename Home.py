@@ -1,6 +1,14 @@
 import streamlit as st
 
-from src.database import init_db, read_table, get_setting
+from src.database import (
+    init_db,
+    read_table,
+    get_setting,
+    get_users,
+    set_active_user,
+    get_active_user_id,
+    get_user_by_id,
+)
 from src.seed_data import seed_all
 from src.analytics import (
     calculate_summary_metrics,
@@ -27,9 +35,52 @@ st.set_page_config(
 inject_global_styles()
 init_db()
 
-if "seeded" not in st.session_state:
+
+def profile_selector() -> None:
+    users = get_users()
+
+    if users.empty:
+        st.error("No user profiles found. Go to Settings after the app loads and create a profile.")
+        return
+
+    current_user_id = get_active_user_id()
+    user_ids = users["id"].astype(int).tolist()
+
+    if current_user_id not in user_ids:
+        current_user_id = user_ids[0]
+
+    current_index = user_ids.index(current_user_id)
+
+    display_options = [
+        f"{row['display_name'] or row['name']}"
+        for _, row in users.iterrows()
+    ]
+
+    selected_display = st.selectbox(
+        "Who is using the app?",
+        options=display_options,
+        index=current_index,
+        key="home_profile_selector",
+    )
+
+    selected_row = users.iloc[display_options.index(selected_display)]
+    selected_user_id = int(selected_row["id"])
+    selected_name = str(selected_row["display_name"] or selected_row["name"])
+
+    set_active_user(selected_user_id, selected_name)
+
+    st.success(f"Active profile: {selected_name}")
+
+
+profile_selector()
+
+active_user_id = get_active_user_id()
+active_user = get_user_by_id(active_user_id)
+active_name = active_user["display_name"] if active_user else "User"
+
+if st.session_state.get("seeded_user_id") != active_user_id:
     seed_all()
-    st.session_state.seeded = True
+    st.session_state["seeded_user_id"] = active_user_id
 
 home_banner()
 
@@ -43,7 +94,7 @@ selected_template_key = get_setting("selected_template_key", "balanced")
 
 remaining = round(current_bodyweight - goal_bodyweight, 1)
 
-st.subheader("Command Center")
+st.subheader(f"{active_name}'s Command Center")
 
 c1, c2, c3, c4 = st.columns(4)
 
@@ -119,7 +170,7 @@ with b2:
 with b3:
     command_card(
         title="Settings",
-        description="Edit bodyweight goals, training loads, exercise defaults, and database tools.",
+        description="Edit bodyweight goals, training loads, exercise defaults, users, and database tools.",
         page="pages/5_Settings.py",
         icon_file="settings.svg",
         button_label="Open Settings",
@@ -175,7 +226,7 @@ st.divider()
 
 app_storage_warning()
 
-with st.expander("Database status"):
+with st.expander("Database status for active profile"):
     try:
         checkins = read_table("daily_checkins")
         workouts = read_table("workout_sessions")
