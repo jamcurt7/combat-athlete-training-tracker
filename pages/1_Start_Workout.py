@@ -11,6 +11,8 @@ from src.database import (
     insert_completed_set,
     mark_workout_completed,
     get_setting,
+    get_active_user_id,
+    get_user_by_id,
 )
 from src.readiness_engine import calculate_readiness_score
 from src.workout_generator import generate_workout
@@ -33,6 +35,10 @@ st.set_page_config(page_title="Start Workout", page_icon="🏋️", layout="wide
 inject_global_styles()
 init_db()
 
+active_user_id = get_active_user_id()
+active_user = get_user_by_id(active_user_id)
+active_name = active_user["display_name"] if active_user else "User"
+
 
 def clear_active_workout() -> None:
     keys_to_clear = [
@@ -45,11 +51,32 @@ def clear_active_workout() -> None:
         "progression_updates",
         "completed_set_keys",
         "workout_flow_step",
+        "active_workout_user_id",
     ]
 
     for key in keys_to_clear:
         if key in st.session_state:
             del st.session_state[key]
+
+    for key in list(st.session_state.keys()):
+        if key.startswith("active_weight_"):
+            del st.session_state[key]
+        elif key.startswith("active_reps_"):
+            del st.session_state[key]
+        elif key.startswith("active_rpe_"):
+            del st.session_state[key]
+        elif key.startswith("notes_"):
+            del st.session_state[key]
+
+
+def protect_against_profile_switch() -> None:
+    stored_user_id = st.session_state.get("active_workout_user_id")
+
+    if stored_user_id is not None and int(stored_user_id) != int(active_user_id):
+        clear_active_workout()
+        st.info(
+            f"Active workout state was cleared because the profile changed to {active_name}."
+        )
 
 
 def initialize_set_state(
@@ -59,9 +86,9 @@ def initialize_set_state(
     default_reps: int,
     default_rpe: float,
 ) -> tuple[str, str, str]:
-    weight_key = f"active_weight_{exercise_index}_{set_number}"
-    reps_key = f"active_reps_{exercise_index}_{set_number}"
-    rpe_key = f"active_rpe_{exercise_index}_{set_number}"
+    weight_key = f"active_weight_{active_user_id}_{exercise_index}_{set_number}"
+    reps_key = f"active_reps_{active_user_id}_{exercise_index}_{set_number}"
+    rpe_key = f"active_rpe_{active_user_id}_{exercise_index}_{set_number}"
 
     if weight_key not in st.session_state:
         st.session_state[weight_key] = float(default_weight)
@@ -79,17 +106,26 @@ def copy_previous_set(exercise_index: int, set_number: int) -> None:
     if set_number <= 1:
         return
 
-    prev_weight_key = f"active_weight_{exercise_index}_{set_number - 1}"
-    prev_reps_key = f"active_reps_{exercise_index}_{set_number - 1}"
-    prev_rpe_key = f"active_rpe_{exercise_index}_{set_number - 1}"
+    prev_weight_key = f"active_weight_{active_user_id}_{exercise_index}_{set_number - 1}"
+    prev_reps_key = f"active_reps_{active_user_id}_{exercise_index}_{set_number - 1}"
+    prev_rpe_key = f"active_rpe_{active_user_id}_{exercise_index}_{set_number - 1}"
 
-    weight_key = f"active_weight_{exercise_index}_{set_number}"
-    reps_key = f"active_reps_{exercise_index}_{set_number}"
-    rpe_key = f"active_rpe_{exercise_index}_{set_number}"
+    weight_key = f"active_weight_{active_user_id}_{exercise_index}_{set_number}"
+    reps_key = f"active_reps_{active_user_id}_{exercise_index}_{set_number}"
+    rpe_key = f"active_rpe_{active_user_id}_{exercise_index}_{set_number}"
 
-    st.session_state[weight_key] = st.session_state.get(prev_weight_key, st.session_state.get(weight_key, 0.0))
-    st.session_state[reps_key] = st.session_state.get(prev_reps_key, st.session_state.get(reps_key, 0))
-    st.session_state[rpe_key] = st.session_state.get(prev_rpe_key, st.session_state.get(rpe_key, 7.0))
+    st.session_state[weight_key] = st.session_state.get(
+        prev_weight_key,
+        st.session_state.get(weight_key, 0.0),
+    )
+    st.session_state[reps_key] = st.session_state.get(
+        prev_reps_key,
+        st.session_state.get(reps_key, 0),
+    )
+    st.session_state[rpe_key] = st.session_state.get(
+        prev_rpe_key,
+        st.session_state.get(rpe_key, 7.0),
+    )
 
 
 def adjust_weight(key: str, amount: float) -> None:
@@ -108,13 +144,13 @@ def clear_set_state_for_exercise(exercise_index: int) -> None:
     keys_to_delete = []
 
     for key in list(st.session_state.keys()):
-        if key.startswith(f"active_weight_{exercise_index}_"):
+        if key.startswith(f"active_weight_{active_user_id}_{exercise_index}_"):
             keys_to_delete.append(key)
-        if key.startswith(f"active_reps_{exercise_index}_"):
+        if key.startswith(f"active_reps_{active_user_id}_{exercise_index}_"):
             keys_to_delete.append(key)
-        if key.startswith(f"active_rpe_{exercise_index}_"):
+        if key.startswith(f"active_rpe_{active_user_id}_{exercise_index}_"):
             keys_to_delete.append(key)
-        if key.startswith(f"notes_{exercise_index}_"):
+        if key.startswith(f"notes_{active_user_id}_{exercise_index}_"):
             keys_to_delete.append(key)
 
     for key in keys_to_delete:
@@ -137,17 +173,21 @@ def replace_exercise(exercise_index: int, substitution_type: str) -> None:
     )
 
     workout["exercises"][exercise_index - 1] = replacement
-    workout["estimated_fatigue"] = sum(int(item.get("fatigue_points", 3)) for item in workout["exercises"])
+    workout["estimated_fatigue"] = sum(
+        int(item.get("fatigue_points", 3)) for item in workout["exercises"]
+    )
     st.session_state["latest_workout"] = workout
     clear_set_state_for_exercise(exercise_index)
 
+
+protect_against_profile_switch()
 
 if "workout_flow_step" not in st.session_state:
     st.session_state["workout_flow_step"] = 1
 
 page_header(
     "Start Workout",
-    "Check in, generate today’s adaptive workout, then log your completed sets.",
+    f"Active profile: {active_name}. Check in, generate today’s adaptive workout, then log completed sets.",
 )
 
 active_step = st.session_state["workout_flow_step"]
@@ -156,7 +196,7 @@ step_navigation(active_step)
 default_bodyweight = float(get_setting("current_bodyweight", 218))
 
 if active_step == 1:
-    st.subheader("Daily Check-In")
+    st.subheader(f"Daily Check-In — {active_name}")
 
     if "latest_workout" in st.session_state:
         if st.session_state.get("workout_saved", False):
@@ -349,6 +389,7 @@ if active_step == 1:
         for exercise_item in workout["exercises"]:
             insert_planned_exercise(workout_id, exercise_item)
 
+        st.session_state["active_workout_user_id"] = active_user_id
         st.session_state["latest_checkin"] = checkin_for_generator
         st.session_state["latest_checkin_id"] = checkin_id
         st.session_state["latest_workout"] = workout
@@ -387,7 +428,7 @@ elif active_step == 2:
         workout_training_logic_expander(workout, checkin)
 
         st.divider()
-        st.subheader("Workout Plan")
+        st.subheader(f"Workout Plan — {active_name}")
 
         for index, exercise_item in enumerate(workout["exercises"], start=1):
             compact_exercise_card(exercise_item, index)
@@ -396,17 +437,17 @@ elif active_step == 2:
             sub_col1, sub_col2, sub_col3 = st.columns(3)
 
             with sub_col1:
-                if st.button("Modality Substitute", key=f"modality_sub_{index}", use_container_width=True):
+                if st.button("Modality Substitute", key=f"modality_sub_{active_user_id}_{index}", use_container_width=True):
                     replace_exercise(index, "modality")
                     st.rerun()
 
             with sub_col2:
-                if st.button("Full Substitute", key=f"full_sub_{index}", use_container_width=True):
+                if st.button("Full Substitute", key=f"full_sub_{active_user_id}_{index}", use_container_width=True):
                     replace_exercise(index, "full")
                     st.rerun()
 
             with sub_col3:
-                if st.button("Log This Exercise", key=f"log_exercise_{index}", use_container_width=True):
+                if st.button("Log This Exercise", key=f"log_exercise_{active_user_id}_{index}", use_container_width=True):
                     st.session_state["workout_flow_step"] = 3
                     st.rerun()
 
@@ -471,7 +512,7 @@ elif active_step == 3:
         if "completed_set_keys" not in st.session_state:
             st.session_state["completed_set_keys"] = set()
 
-        st.subheader("Log Completed Sets")
+        st.subheader(f"Log Completed Sets — {active_name}")
 
         st.write(
             "Use the buttons to adjust quickly. Tap Complete Set after each finished set."
@@ -534,37 +575,37 @@ elif active_step == 3:
                     button_cols = st.columns(6)
 
                     with button_cols[0]:
-                        if st.button("+5 lb", key=f"plus5_{set_key}"):
+                        if st.button("+5 lb", key=f"plus5_{active_user_id}_{set_key}"):
                             adjust_weight(weight_key, 5)
                             st.rerun()
 
                     with button_cols[1]:
-                        if st.button("-5 lb", key=f"minus5_{set_key}"):
+                        if st.button("-5 lb", key=f"minus5_{active_user_id}_{set_key}"):
                             adjust_weight(weight_key, -5)
                             st.rerun()
 
                     with button_cols[2]:
-                        if st.button("+1 rep", key=f"plusrep_{set_key}"):
+                        if st.button("+1 rep", key=f"plusrep_{active_user_id}_{set_key}"):
                             adjust_reps(reps_key, 1)
                             st.rerun()
 
                     with button_cols[3]:
-                        if st.button("-1 rep", key=f"minusrep_{set_key}"):
+                        if st.button("-1 rep", key=f"minusrep_{active_user_id}_{set_key}"):
                             adjust_reps(reps_key, -1)
                             st.rerun()
 
                     with button_cols[4]:
-                        if st.button("Easy", key=f"easy_{set_key}"):
+                        if st.button("Easy", key=f"easy_{active_user_id}_{set_key}"):
                             adjust_rpe(rpe_key, -0.5)
                             st.rerun()
 
                     with button_cols[5]:
-                        if st.button("Hard", key=f"hard_{set_key}"):
+                        if st.button("Hard", key=f"hard_{active_user_id}_{set_key}"):
                             adjust_rpe(rpe_key, 0.5)
                             st.rerun()
 
                     if set_number > 1:
-                        if st.button("Same as previous set", key=f"same_prev_{set_key}", use_container_width=True):
+                        if st.button("Same as previous set", key=f"same_prev_{active_user_id}_{set_key}", use_container_width=True):
                             copy_previous_set(exercise_index, set_number)
                             st.rerun()
 
@@ -600,13 +641,13 @@ elif active_step == 3:
                     notes = st.text_input(
                         "Set notes",
                         value="",
-                        key=f"notes_{set_key}",
+                        key=f"notes_{active_user_id}_{set_key}",
                     )
 
                     complete_col1, complete_col2 = st.columns(2)
 
                     with complete_col1:
-                        if st.button("Complete Set", key=f"complete_{set_key}", use_container_width=True):
+                        if st.button("Complete Set", key=f"complete_{active_user_id}_{set_key}", use_container_width=True):
                             set_data = {
                                 "exercise_name": exercise_item["exercise_name"],
                                 "set_number": set_number,
@@ -625,7 +666,7 @@ elif active_step == 3:
                                 st.warning("Reps must be greater than 0 to complete a set.")
 
                     with complete_col2:
-                        if st.button("Skip Set", key=f"skip_{set_key}", use_container_width=True):
+                        if st.button("Skip Set", key=f"skip_{active_user_id}_{set_key}", use_container_width=True):
                             st.session_state["completed_set_keys"].add(set_key)
                             st.rerun()
 
@@ -668,7 +709,7 @@ elif active_step == 3:
                 st.rerun()
 
 elif active_step == 4:
-    st.success("Workout saved and completed.")
+    st.success(f"Workout saved and completed for {active_name}.")
 
     updates = st.session_state.get("progression_updates", [])
 
