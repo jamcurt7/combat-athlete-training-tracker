@@ -8,14 +8,15 @@ from src.database import (
     get_completed_workout_count,
     get_setting,
 )
+from src.exercise_selector import select_exercise
 
 
 MAX_LIFTS = {
     "Trap Bar Deadlift": 375,
     "Bench Press": 245,
     "Squat": 365,
-    "Weighted Pull-Up": 45,  # Added weight only
-    "Weighted Chin-Up": 45,  # Added weight only
+    "Weighted Pull-Up": 45,
+    "Weighted Chin-Up": 45,
 }
 
 DEFAULT_TRAINING_LOADS = {
@@ -93,13 +94,6 @@ def safe_main_lift_load(
     readiness_category: str,
     fallback: float,
 ) -> float:
-    """
-    Generates conservative, capped load suggestions.
-
-    Important:
-    Weighted pull-ups/chin-ups use added weight only.
-    Bench suggestions can never exceed bench max.
-    """
     training_max = get_training_max(exercise_name)
     progression_load = get_progression_load(exercise_name, fallback)
 
@@ -132,7 +126,6 @@ def generate_workout(checkin: dict[str, Any]) -> dict[str, Any]:
     time_available = int(checkin.get("time_available", 60))
     goal_today = checkin.get("goal_today", "normal")
     day_name = get_day_name()
-
     deload = is_deload_day()
 
     training_focus = checkin.get("training_focus_today", "Let app decide")
@@ -165,61 +158,60 @@ def generate_workout(checkin: dict[str, Any]) -> dict[str, Any]:
     else:
         workout_modifier = "normal"
 
-    if template_key == "recovery":
-        exercises = red_day_workout(time_available, workout_modifier)
-        workout_type = "Recovery / Mobility"
-        reason = "Recovery focus selected. The app generated a low-fatigue mobility and recovery session."
+    slot_plan = build_slot_plan(
+        checkin=checkin,
+        focus=focus,
+        readiness_category=readiness_category,
+        goal_today=goal_today,
+        workout_modifier=workout_modifier,
+        template_key=template_key,
+        deload=deload,
+    )
 
-    elif template_key == "accessory" and readiness_category in {"Yellow", "Orange", "Red"}:
-        exercises = accessory_day_workout(time_available, workout_modifier)
-        workout_type = "Accessory / Hypertrophy Support"
-        reason = "Accessory focus selected. The app generated lower-fatigue isolation, grip, core, and mobility work."
+    fatigue_budget = get_fatigue_budget(
+        readiness_category=readiness_category,
+        goal_today=goal_today,
+        time_available=time_available,
+        combat_later_today=bool(checkin.get("combat_later_today", False)),
+        hard_sparring_last_24h=bool(checkin.get("hard_sparring_last_24h", False)),
+        deload=deload,
+        workout_modifier=workout_modifier,
+    )
 
-    elif deload and readiness_category in {"Green", "Yellow"}:
-        workout_type = "Deload / Light Full Body"
-        reason = (
-            "Scheduled conservative deload. The app reduced intensity and volume to protect recovery "
-            "while keeping movement quality high."
-        )
-        exercises = orange_day_workout(
-            focus,
-            time_available,
-            deload=True,
-            template_key=template_key,
-            workout_modifier=workout_modifier,
-        )
+    exercises = build_workout_from_slots(
+        slot_plan=slot_plan,
+        readiness_category=readiness_category,
+        focus=focus,
+        workout_modifier=workout_modifier,
+        fatigue_budget=fatigue_budget,
+        time_available=time_available,
+    )
 
-    elif readiness_category == "Green":
-        exercises = green_day_workout(focus, time_available, template_key, workout_modifier)
-        workout_type = "Full-Body Strength"
-        reason = "High readiness. The app generated a productive full-body strength session."
+    exercises = finalize_selected_exercises(
+        exercises=exercises,
+        readiness_category=readiness_category,
+        workout_modifier=workout_modifier,
+    )
 
-    elif readiness_category == "Yellow":
-        exercises = yellow_day_workout(focus, time_available, template_key, workout_modifier)
-        workout_type = "Full-Body Strength"
-        reason = "Moderate readiness. The app generated a normal full-body session."
+    workout_type = determine_workout_type(
+        readiness_category=readiness_category,
+        focus=focus,
+        goal_today=goal_today,
+        deload=deload,
+        template_key=template_key,
+        exercises=exercises,
+    )
 
-    elif readiness_category == "Orange":
-        exercises = orange_day_workout(
-            focus,
-            time_available,
-            template_key=template_key,
-            workout_modifier=workout_modifier,
-        )
-        workout_type = "Light / Accessory"
-        reason = "Reduced readiness. The app lowered intensity and shifted toward accessories."
-
-    else:
-        exercises = red_day_workout(time_available, workout_modifier)
-        workout_type = "Recovery"
-        reason = "Low readiness. The app generated a recovery-focused session."
-
-    if focus_workout:
-        reason += " Focus workout selected, so the app kept the session tighter and less scattered."
-    elif fun_workout:
-        reason += " Fun workout selected, so the app added more variety where appropriate."
-    elif chaos_workout:
-        reason += " Chaos workout selected, so the app used more unusual but still safe variations."
+    reason = build_generation_reason(
+        readiness_category=readiness_category,
+        focus=focus,
+        goal_today=goal_today,
+        workout_modifier=workout_modifier,
+        fatigue_budget=fatigue_budget,
+        checkin=checkin,
+        deload=deload,
+        exercises=exercises,
+    )
 
     return {
         "date": date.today().isoformat(),
@@ -231,6 +223,8 @@ def generate_workout(checkin: dict[str, Any]) -> dict[str, Any]:
         "deload": deload,
         "template_key": template_key,
         "workout_modifier": workout_modifier,
+        "fatigue_budget": fatigue_budget,
+        "estimated_fatigue": sum(int(exercise.get("fatigue_points", 3)) for exercise in exercises),
         "exercises": exercises,
     }
 
@@ -300,1351 +294,669 @@ def determine_focus(
     return "Full body"
 
 
-def make_exercise(
-    exercise_name: str,
-    movement_pattern: str,
-    exercise_category: str,
-    sets: int,
-    reps_min: int,
-    reps_max: int,
-    weight: float,
-    target_rpe: float,
-    notes: str,
-    prescription_type: str = "strength",
-    equipment: str = "",
-    modality: str = "",
-    fatigue_cost: str = "medium",
-    combat_transfer: str = "medium",
-    duration_minutes: int | None = None,
-    hold_seconds: int | None = None,
-    distance: str = "",
-    heart_rate_target: str = "",
-    intensity_target: str = "",
-    side: str = "",
+def get_fatigue_budget(
+    readiness_category: str,
+    goal_today: str,
+    time_available: int,
+    combat_later_today: bool,
+    hard_sparring_last_24h: bool,
+    deload: bool,
+    workout_modifier: str,
+) -> int:
+    if readiness_category == "Green":
+        budget = 30
+    elif readiness_category == "Yellow":
+        budget = 23
+    elif readiness_category == "Orange":
+        budget = 15
+    else:
+        budget = 10
+
+    if goal_today == "push":
+        budget += 4
+    elif goal_today == "maintain":
+        budget -= 2
+    elif goal_today == "recovery":
+        budget -= 5
+
+    if time_available <= 30:
+        budget -= 6
+    elif time_available <= 45:
+        budget -= 2
+    elif time_available >= 75:
+        budget += 5
+
+    if combat_later_today:
+        budget -= 5
+
+    if hard_sparring_last_24h:
+        budget -= 4
+
+    if deload:
+        budget -= 7
+
+    if workout_modifier == "focus":
+        budget -= 3
+    elif workout_modifier == "fun":
+        budget += 2
+    elif workout_modifier == "chaos":
+        budget += 1
+
+    return max(6, budget)
+
+
+def slot(
+    name: str,
+    desired_pattern: str,
+    session_slot: str,
+    method_tag: str | None = None,
+    allowed_categories: list[str] | None = None,
+    allowed_types: list[str] | None = None,
+    required: bool = False,
+    priority: int = 5,
 ) -> dict[str, Any]:
     return {
-        "exercise_name": exercise_name,
-        "movement_pattern": movement_pattern,
-        "exercise_category": exercise_category,
-        "planned_sets": sets,
-        "planned_reps_min": reps_min,
-        "planned_reps_max": reps_max,
-        "planned_weight": weight,
-        "target_rpe": target_rpe,
-        "notes": notes,
-        "prescription_type": prescription_type,
-        "equipment": equipment,
-        "modality": modality,
-        "fatigue_cost": fatigue_cost,
-        "combat_transfer": combat_transfer,
-        "duration_minutes": duration_minutes,
-        "hold_seconds": hold_seconds,
-        "distance": distance,
-        "heart_rate_target": heart_rate_target,
-        "intensity_target": intensity_target,
-        "side": side,
+        "name": name,
+        "desired_pattern": desired_pattern,
+        "session_slot": session_slot,
+        "method_tag": method_tag,
+        "allowed_categories": allowed_categories,
+        "allowed_types": allowed_types,
+        "required": required,
+        "priority": priority,
     }
 
 
-def vertical_pull_choice(seed: int, weighted: bool = False) -> dict[str, str]:
-    weighted_options = [
-        {
-            "name": "Weighted Pull-Up",
-            "movement_pattern": "vertical_pull",
-            "category": "main_lift",
-            "equipment": "pull-up bar",
-            "modality": "weighted bodyweight",
-        },
-        {
-            "name": "Weighted Chin-Up",
-            "movement_pattern": "vertical_pull",
-            "category": "main_lift",
-            "equipment": "pull-up bar",
-            "modality": "weighted bodyweight",
-        },
-    ]
-
-    bodyweight_options = [
-        {
-            "name": "Pull-Up",
-            "movement_pattern": "vertical_pull",
-            "category": "accessory",
-            "equipment": "pull-up bar",
-            "modality": "bodyweight",
-        },
-        {
-            "name": "Chin-Up",
-            "movement_pattern": "vertical_pull",
-            "category": "accessory",
-            "equipment": "pull-up bar",
-            "modality": "bodyweight",
-        },
-        {
-            "name": "Neutral-Grip Pull-Up",
-            "movement_pattern": "vertical_pull",
-            "category": "accessory",
-            "equipment": "pull-up bar",
-            "modality": "bodyweight",
-        },
-    ]
-
-    options = weighted_options if weighted else bodyweight_options
-    return options[seed % len(options)]
-
-
-def accessory_rotation(index_seed: int, workout_modifier: str = "normal") -> list[dict[str, Any]]:
-    rotations = [
-        [
-            make_exercise(
-                "Farmer Carry",
-                "carry_grip",
-                "gpp",
-                3,
-                30,
-                60,
-                0,
-                7.5,
-                "Grip, trunk, and posture.",
-                prescription_type="carry",
-                equipment="dumbbells or kettlebells",
-                modality="loaded carry",
-                fatigue_cost="medium",
-                combat_transfer="high",
-                distance="30-60 sec",
-            ),
-            make_exercise(
-                "GHR Sit-Up",
-                "core",
-                "accessory",
-                2,
-                8,
-                12,
-                0,
-                7.0,
-                "Core strength.",
-                prescription_type="bodyweight",
-                equipment="GHR bench",
-                modality="bodyweight",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-            make_exercise(
-                "Neck Isometrics",
-                "neck",
-                "recovery_accessory",
-                2,
-                10,
-                20,
-                0,
-                5.0,
-                "Controlled neck work. Do not strain.",
-                prescription_type="mobility",
-                equipment="bodyweight or hands",
-                modality="isometric",
-                fatigue_cost="low",
-                combat_transfer="high",
-                intensity_target="easy controlled pressure",
-            ),
-        ],
-        [
-            make_exercise(
-                "Suitcase Carry",
-                "carry_grip",
-                "gpp",
-                3,
-                30,
-                60,
-                0,
-                7.0,
-                "Anti-lateral flexion and grip.",
-                prescription_type="carry",
-                equipment="dumbbell or kettlebell",
-                modality="loaded carry",
-                fatigue_cost="medium",
-                combat_transfer="high",
-                distance="30-60 sec each side",
-                side="each side",
-            ),
-            make_exercise(
-                "Hanging Knee Raise",
-                "core",
-                "accessory",
-                2,
-                8,
-                12,
-                0,
-                7.0,
-                "Abs and hip flexor control.",
-                prescription_type="bodyweight",
-                equipment="pull-up bar",
-                modality="bodyweight",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-            make_exercise(
-                "Reverse Wrist Curl",
-                "forearm_grip",
-                "accessory",
-                2,
-                12,
-                20,
-                0,
-                7.0,
-                "Forearm balance.",
-                prescription_type="strength",
-                equipment="dumbbell or barbell",
-                modality="isolation",
-                fatigue_cost="low",
-                combat_transfer="medium",
-            ),
-        ],
-        [
-            make_exercise(
-                "Back Extension",
-                "posterior_chain",
-                "accessory",
-                3,
-                10,
-                15,
-                0,
-                7.0,
-                "Posterior-chain volume.",
-                prescription_type="bodyweight",
-                equipment="back extension bench",
-                modality="bodyweight or loaded",
-                fatigue_cost="medium",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Plank",
-                "core",
-                "accessory",
-                2,
-                30,
-                60,
-                0,
-                7.0,
-                "Trunk stiffness. Time is in seconds.",
-                prescription_type="mobility",
-                equipment="floor",
-                modality="isometric",
-                fatigue_cost="low",
-                combat_transfer="medium",
-                hold_seconds=45,
-                intensity_target="strong brace",
-            ),
-            make_exercise(
-                "Hammer Curl",
-                "forearm_grip",
-                "accessory",
-                2,
-                10,
-                15,
-                0,
-                7.5,
-                "Arm and grip support.",
-                prescription_type="strength",
-                equipment="dumbbells",
-                modality="isolation",
-                fatigue_cost="low",
-                combat_transfer="medium",
-            ),
-        ],
-        [
-            make_exercise(
-                "Hip Airplane",
-                "mobility",
-                "recovery",
-                2,
-                5,
-                8,
-                0,
-                4.0,
-                "Hip control and balance.",
-                prescription_type="mobility",
-                equipment="bodyweight",
-                modality="mobility",
-                fatigue_cost="low",
-                combat_transfer="medium",
-                intensity_target="controlled range",
-                side="each side",
-            ),
-            make_exercise(
-                "Dead Bug",
-                "core",
-                "recovery_accessory",
-                2,
-                8,
-                12,
-                0,
-                5.0,
-                "Breathing and bracing.",
-                prescription_type="mobility",
-                equipment="floor",
-                modality="bodyweight",
-                fatigue_cost="low",
-                combat_transfer="medium",
-                intensity_target="controlled breathing",
-            ),
-            make_exercise(
-                "Wrist Curl",
-                "forearm_grip",
-                "accessory",
-                2,
-                12,
-                20,
-                0,
-                7.0,
-                "Forearm support.",
-                prescription_type="strength",
-                equipment="dumbbell or barbell",
-                modality="isolation",
-                fatigue_cost="low",
-                combat_transfer="medium",
-            ),
-        ],
-    ]
-
-    selected = rotations[index_seed % len(rotations)]
-
-    if workout_modifier == "focus":
-        return selected[:2]
-
-    if workout_modifier == "fun":
-        return selected + [
-            make_exercise(
-                "Bike",
-                "conditioning",
-                "cardio",
-                1,
-                8,
-                12,
-                0,
-                5.0,
-                "Easy finisher. Keep it playful, not brutal.",
-                prescription_type="cardio",
-                equipment="bike",
-                modality="cyclical cardio",
-                fatigue_cost="low",
-                combat_transfer="medium",
-                duration_minutes=10,
-                heart_rate_target="Zone 2 or nasal breathing",
-                intensity_target="easy-moderate",
-            )
-        ]
-
-    if workout_modifier == "chaos":
-        return selected + [
-            make_exercise(
-                "Mobility Flow",
-                "mobility",
-                "mobility",
-                1,
-                5,
-                10,
-                0,
-                4.0,
-                "Odd-object style cooldown: move creatively but safely.",
-                prescription_type="mobility",
-                equipment="bodyweight",
-                modality="flow",
-                fatigue_cost="low",
-                combat_transfer="medium",
-                duration_minutes=8,
-                intensity_target="smooth and controlled",
-            )
-        ]
-
-    return selected
-
-
-def green_day_workout(
+def build_slot_plan(
+    checkin: dict[str, Any],
     focus: str,
-    time_available: int,
-    template_key: str,
+    readiness_category: str,
+    goal_today: str,
     workout_modifier: str,
-) -> list[dict[str, Any]]:
-    completed_count = get_completed_workout_count()
-
-    trap_load = safe_main_lift_load("Trap Bar Deadlift", "Green", DEFAULT_TRAINING_LOADS["Trap Bar Deadlift"])
-    bench_load = safe_main_lift_load("Bench Press", "Green", DEFAULT_TRAINING_LOADS["Bench Press"])
-    squat_load = safe_main_lift_load("Squat", "Green", DEFAULT_TRAINING_LOADS["Squat"])
-
-    pull_choice = vertical_pull_choice(completed_count, weighted=True)
-    pull_name = pull_choice["name"]
-    pull_load = safe_main_lift_load(pull_name, "Green", DEFAULT_TRAINING_LOADS.get(pull_name, 20))
-
-    if focus in {"Posterior chain / grappling", "posterior_chain"}:
-        exercises = [
-            make_exercise(
-                "Trap Bar Deadlift",
-                "hinge",
-                "main_lift",
-                4,
-                3,
-                5,
-                trap_load,
-                8.0,
-                "Main posterior-chain strength. Smooth reps only.",
-                prescription_type="strength",
-                equipment="trap bar",
-                modality="free weight",
-                fatigue_cost="high",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                pull_name,
-                "vertical_pull",
-                "main_lift",
-                4,
-                3,
-                6,
-                pull_load,
-                8.0,
-                "Added weight only. Grappling pull strength.",
-                prescription_type="strength",
-                equipment="pull-up bar",
-                modality="weighted bodyweight",
-                fatigue_cost="high",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Romanian Deadlift",
-                "hinge",
-                "secondary_lift",
-                3,
-                6,
-                10,
-                0,
-                7.5,
-                "Hamstrings and trunk.",
-                prescription_type="strength",
-                equipment="barbell or dumbbells",
-                modality="free weight",
-                fatigue_cost="medium",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Chest-Supported Row",
-                "horizontal_pull",
-                "secondary_lift",
-                3,
-                8,
-                12,
-                0,
-                8.0,
-                "Upper-back strength.",
-                prescription_type="strength",
-                equipment="machine or bench + dumbbells",
-                modality="supported pull",
-                fatigue_cost="medium",
-                combat_transfer="high",
-            ),
-        ]
-
-    elif focus in {"Upper emphasis", "upper_grip"}:
-        exercises = [
-            make_exercise(
-                "Bench Press",
-                "horizontal_push",
-                "main_lift",
-                4,
-                4,
-                6,
-                bench_load,
-                8.0,
-                "Main press. No grinders.",
-                prescription_type="strength",
-                equipment="barbell",
-                modality="free weight",
-                fatigue_cost="high",
-                combat_transfer="medium",
-            ),
-            make_exercise(
-                pull_name,
-                "vertical_pull",
-                "main_lift",
-                4,
-                3,
-                6,
-                pull_load,
-                8.0,
-                "Added weight only. Prioritize clean reps.",
-                prescription_type="strength",
-                equipment="pull-up bar",
-                modality="weighted bodyweight",
-                fatigue_cost="high",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Chest-Supported Row",
-                "horizontal_pull",
-                "secondary_lift",
-                3,
-                8,
-                12,
-                0,
-                8.0,
-                "Upper back volume.",
-                prescription_type="strength",
-                equipment="machine or bench + dumbbells",
-                modality="supported pull",
-                fatigue_cost="medium",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Landmine Press",
-                "vertical_push",
-                "secondary_lift",
-                3,
-                6,
-                10,
-                0,
-                7.5,
-                "Athletic pressing.",
-                prescription_type="strength",
-                equipment="landmine",
-                modality="free weight",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-        ]
-
-    elif focus in {"Lower emphasis", "lower_strength"}:
-        exercises = [
-            make_exercise(
-                "Squat",
-                "squat",
-                "main_lift",
-                4,
-                4,
-                6,
-                squat_load,
-                8.0,
-                "Main squat pattern.",
-                prescription_type="strength",
-                equipment="barbell",
-                modality="free weight",
-                fatigue_cost="high",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Trap Bar Deadlift",
-                "hinge",
-                "main_lift",
-                3,
-                3,
-                5,
-                trap_load,
-                8.0,
-                "Main hinge pattern.",
-                prescription_type="strength",
-                equipment="trap bar",
-                modality="free weight",
-                fatigue_cost="high",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Bench Press",
-                "horizontal_push",
-                "main_lift",
-                3,
-                4,
-                6,
-                bench_load,
-                7.5,
-                "Keep pressing maintained.",
-                prescription_type="strength",
-                equipment="barbell",
-                modality="free weight",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-            make_exercise(
-                "Step-Up",
-                "single_leg",
-                "accessory",
-                3,
-                8,
-                12,
-                0,
-                7.5,
-                "Single-leg strength.",
-                prescription_type="strength",
-                equipment="box + dumbbells optional",
-                modality="single-leg",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-        ]
-
-    else:
-        exercises = [
-            make_exercise(
-                "Trap Bar Deadlift",
-                "hinge",
-                "main_lift",
-                3,
-                3,
-                5,
-                trap_load,
-                8.0,
-                "Main hinge strength.",
-                prescription_type="strength",
-                equipment="trap bar",
-                modality="free weight",
-                fatigue_cost="high",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Bench Press",
-                "horizontal_push",
-                "main_lift",
-                3,
-                4,
-                6,
-                bench_load,
-                8.0,
-                "Main press.",
-                prescription_type="strength",
-                equipment="barbell",
-                modality="free weight",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-            make_exercise(
-                pull_name,
-                "vertical_pull",
-                "main_lift",
-                3,
-                3,
-                6,
-                pull_load,
-                8.0,
-                "Added weight only. Main pull.",
-                prescription_type="strength",
-                equipment="pull-up bar",
-                modality="weighted bodyweight",
-                fatigue_cost="high",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Split Squat",
-                "single_leg",
-                "accessory",
-                3,
-                8,
-                12,
-                0,
-                7.5,
-                "Single-leg strength.",
-                prescription_type="strength",
-                equipment="dumbbells optional",
-                modality="single-leg",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-        ]
-
-    exercises.extend(accessory_rotation(completed_count, workout_modifier))
-    return trim_for_time(exercises, time_available)
-
-
-def yellow_day_workout(
-    focus: str,
-    time_available: int,
     template_key: str,
-    workout_modifier: str,
+    deload: bool,
 ) -> list[dict[str, Any]]:
-    completed_count = get_completed_workout_count()
+    soreness = int(checkin.get("soreness", 5))
+    combat_later_today = bool(checkin.get("combat_later_today", False))
+    combat_last_24h = bool(checkin.get("combat_last_24h", False))
+    hard_sparring_last_24h = bool(checkin.get("hard_sparring_last_24h", False))
 
-    trap_load = safe_main_lift_load("Trap Bar Deadlift", "Yellow", DEFAULT_TRAINING_LOADS["Trap Bar Deadlift"])
-    bench_load = safe_main_lift_load("Bench Press", "Yellow", DEFAULT_TRAINING_LOADS["Bench Press"])
-    squat_load = safe_main_lift_load("Squat", "Yellow", DEFAULT_TRAINING_LOADS["Squat"])
+    if template_key == "recovery" or readiness_category == "Red" or goal_today == "recovery":
+        return recovery_slot_plan(workout_modifier)
 
-    weighted_pull_choice = vertical_pull_choice(completed_count + 1, weighted=True)
-    weighted_pull_name = weighted_pull_choice["name"]
-    weighted_pull_load = safe_main_lift_load(
-        weighted_pull_name,
-        "Yellow",
-        DEFAULT_TRAINING_LOADS.get(weighted_pull_name, 20),
+    if deload:
+        return deload_slot_plan(focus, workout_modifier)
+
+    if readiness_category == "Orange" or soreness >= 8 or hard_sparring_last_24h:
+        return light_slot_plan(
+            focus=focus,
+            workout_modifier=workout_modifier,
+            combat_later_today=combat_later_today,
+            combat_last_24h=combat_last_24h,
+        )
+
+    if template_key == "accessory" or focus == "Accessory / pump":
+        return accessory_slot_plan(workout_modifier)
+
+    if focus == "Lower emphasis":
+        return lower_strength_slot_plan(
+            readiness_category=readiness_category,
+            goal_today=goal_today,
+            workout_modifier=workout_modifier,
+            combat_later_today=combat_later_today,
+        )
+
+    if focus == "Upper emphasis":
+        return upper_strength_slot_plan(
+            readiness_category=readiness_category,
+            goal_today=goal_today,
+            workout_modifier=workout_modifier,
+            combat_later_today=combat_later_today,
+        )
+
+    if focus == "Posterior chain / grappling":
+        return grappling_strength_slot_plan(
+            readiness_category=readiness_category,
+            goal_today=goal_today,
+            workout_modifier=workout_modifier,
+            combat_later_today=combat_later_today,
+        )
+
+    return full_body_slot_plan(
+        readiness_category=readiness_category,
+        goal_today=goal_today,
+        workout_modifier=workout_modifier,
+        combat_later_today=combat_later_today,
     )
 
-    body_pull_choice = vertical_pull_choice(completed_count + 1, weighted=False)
-    body_pull_name = body_pull_choice["name"]
 
-    if focus in {"Posterior chain / grappling", "posterior_chain"}:
-        exercises = [
-            make_exercise(
-                "Trap Bar Deadlift",
-                "hinge",
-                "main_lift",
-                3,
-                3,
-                5,
-                trap_load,
-                7.5,
-                "Main hinge work.",
-                prescription_type="strength",
-                equipment="trap bar",
-                modality="free weight",
-                fatigue_cost="high",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                body_pull_name,
-                "vertical_pull",
-                "accessory",
-                3,
-                5,
-                10,
-                0,
-                8.0,
-                "Bodyweight pulling volume.",
-                prescription_type="bodyweight",
-                equipment="pull-up bar",
-                modality="bodyweight",
-                fatigue_cost="medium",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Back Extension",
-                "posterior_chain",
-                "accessory",
-                3,
-                10,
-                15,
-                0,
-                7.0,
-                "Posterior-chain support.",
-                prescription_type="bodyweight",
-                equipment="back extension bench",
-                modality="bodyweight or loaded",
-                fatigue_cost="medium",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Chest-Supported Row",
-                "horizontal_pull",
-                "secondary_lift",
-                3,
-                8,
-                12,
-                0,
-                8.0,
-                "Upper back support.",
-                prescription_type="strength",
-                equipment="machine or bench + dumbbells",
-                modality="supported pull",
-                fatigue_cost="medium",
-                combat_transfer="high",
-            ),
-        ]
-
-    elif focus in {"Upper emphasis", "upper_grip"}:
-        exercises = [
-            make_exercise(
-                "Bench Press",
-                "horizontal_push",
-                "main_lift",
-                3,
-                4,
-                6,
-                bench_load,
-                7.5,
-                "Main press.",
-                prescription_type="strength",
-                equipment="barbell",
-                modality="free weight",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-            make_exercise(
-                weighted_pull_name,
-                "vertical_pull",
-                "main_lift",
-                3,
-                3,
-                6,
-                weighted_pull_load,
-                7.5,
-                "Added weight only. Main pull.",
-                prescription_type="strength",
-                equipment="pull-up bar",
-                modality="weighted bodyweight",
-                fatigue_cost="high",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "DB Row",
-                "horizontal_pull",
-                "accessory",
-                3,
-                8,
-                12,
-                0,
-                8.0,
-                "Rowing volume.",
-                prescription_type="strength",
-                equipment="dumbbell",
-                modality="free weight",
-                fatigue_cost="medium",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Hammer Curl",
-                "forearm_grip",
-                "accessory",
-                3,
-                10,
-                15,
-                0,
-                7.5,
-                "Grip and arm support.",
-                prescription_type="strength",
-                equipment="dumbbells",
-                modality="isolation",
-                fatigue_cost="low",
-                combat_transfer="medium",
-            ),
-        ]
-
-    elif focus in {"Lower emphasis", "lower_strength"}:
-        exercises = [
-            make_exercise(
-                "Squat",
-                "squat",
-                "main_lift",
-                3,
-                4,
-                6,
-                squat_load,
-                7.5,
-                "Main squat work.",
-                prescription_type="strength",
-                equipment="barbell",
-                modality="free weight",
-                fatigue_cost="high",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Trap Bar Deadlift",
-                "hinge",
-                "main_lift",
-                3,
-                3,
-                5,
-                trap_load,
-                7.5,
-                "Main hinge work.",
-                prescription_type="strength",
-                equipment="trap bar",
-                modality="free weight",
-                fatigue_cost="high",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Step-Up",
-                "single_leg",
-                "accessory",
-                2,
-                8,
-                12,
-                0,
-                7.0,
-                "Single-leg support.",
-                prescription_type="strength",
-                equipment="box + dumbbells optional",
-                modality="single-leg",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-            make_exercise(
-                "Dead Bug",
-                "core",
-                "recovery_accessory",
-                2,
-                8,
-                12,
-                0,
-                5.0,
-                "Core control.",
-                prescription_type="mobility",
-                equipment="floor",
-                modality="bodyweight",
-                fatigue_cost="low",
-                combat_transfer="medium",
-                intensity_target="controlled breathing",
-            ),
-        ]
-
-    else:
-        exercises = [
-            make_exercise(
-                "Trap Bar Deadlift",
-                "hinge",
-                "main_lift",
-                3,
-                3,
-                5,
-                trap_load,
-                7.5,
-                "Productive but conservative.",
-                prescription_type="strength",
-                equipment="trap bar",
-                modality="free weight",
-                fatigue_cost="high",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Bench Press",
-                "horizontal_push",
-                "main_lift",
-                3,
-                4,
-                6,
-                bench_load,
-                7.5,
-                "Smooth reps.",
-                prescription_type="strength",
-                equipment="barbell",
-                modality="free weight",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-            make_exercise(
-                body_pull_name,
-                "vertical_pull",
-                "accessory",
-                3,
-                5,
-                10,
-                0,
-                8.0,
-                "Bodyweight pulling volume.",
-                prescription_type="bodyweight",
-                equipment="pull-up bar",
-                modality="bodyweight",
-                fatigue_cost="medium",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Step-Up",
-                "single_leg",
-                "accessory",
-                2,
-                8,
-                12,
-                0,
-                7.0,
-                "Moderate single-leg work.",
-                prescription_type="strength",
-                equipment="box + dumbbells optional",
-                modality="single-leg",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-        ]
-
-    exercises.extend(accessory_rotation(completed_count + 1, workout_modifier))
-    return trim_for_time(exercises, time_available)
-
-
-def orange_day_workout(
-    focus: str,
-    time_available: int,
-    deload: bool = False,
-    template_key: str = "balanced",
-    workout_modifier: str = "normal",
+def full_body_slot_plan(
+    readiness_category: str,
+    goal_today: str,
+    workout_modifier: str,
+    combat_later_today: bool,
 ) -> list[dict[str, Any]]:
-    completed_count = get_completed_workout_count()
+    use_isometric = readiness_category == "Yellow" or combat_later_today
+    use_dynamic = readiness_category == "Green" and goal_today == "push" and not combat_later_today
 
-    trap_load = safe_main_lift_load("Trap Bar Deadlift", "Orange", DEFAULT_TRAINING_LOADS["Trap Bar Deadlift"])
-    bench_load = safe_main_lift_load("Bench Press", "Orange", DEFAULT_TRAINING_LOADS["Bench Press"])
+    plan = [
+        slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
+    ]
 
-    rpe_cap = 6.0 if deload else 6.5
-    body_pull_choice = vertical_pull_choice(completed_count + 2, weighted=False)
-    body_pull_name = body_pull_choice["name"]
+    if use_dynamic:
+        plan.append(
+            slot("Dynamic Effort", "hinge", "dynamic_effort", "dynamic_effort", ["gpp"], required=False, priority=2)
+        )
 
-    if focus in {"Upper emphasis", "upper_grip"}:
-        exercises = [
-            make_exercise(
-                "Bench Press",
-                "horizontal_push",
-                "main_lift",
-                2,
-                4,
-                6,
-                bench_load,
-                rpe_cap,
-                "Easy technique pressing.",
-                prescription_type="strength",
-                equipment="barbell",
-                modality="free weight",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-            make_exercise(
-                body_pull_name,
-                "vertical_pull",
-                "accessory",
-                3,
-                5,
-                8,
-                0,
-                7.0,
-                "Easy pulling. No grinders.",
-                prescription_type="bodyweight",
-                equipment="pull-up bar",
-                modality="bodyweight",
-                fatigue_cost="medium",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Chest-Supported Row",
-                "horizontal_pull",
-                "secondary_lift",
-                3,
-                8,
-                12,
-                0,
-                7.0,
-                "Upper-back volume.",
-                prescription_type="strength",
-                equipment="machine or bench + dumbbells",
-                modality="supported pull",
-                fatigue_cost="medium",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Landmine Press",
-                "vertical_push",
-                "secondary_lift",
-                2,
-                6,
-                10,
-                0,
-                7.0,
-                "Moderate pressing.",
-                prescription_type="strength",
-                equipment="landmine",
-                modality="free weight",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-        ]
+    if use_isometric:
+        plan.append(
+            slot("Strength Exposure", "hinge", "lower_isometric_strength", "overcoming_isometric", ["secondary_lift"], required=True, priority=2)
+        )
     else:
-        exercises = [
-            make_exercise(
-                "Trap Bar Deadlift",
-                "hinge",
-                "main_lift",
-                2,
-                3,
-                5,
-                trap_load,
-                rpe_cap,
-                "Technique work. Keep it easy.",
-                prescription_type="strength",
-                equipment="trap bar",
-                modality="free weight",
-                fatigue_cost="medium",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Landmine Press",
-                "vertical_push",
-                "secondary_lift",
-                3,
-                6,
-                10,
-                0,
-                7.0,
-                "Moderate pressing without grinding.",
-                prescription_type="strength",
-                equipment="landmine",
-                modality="free weight",
-                fatigue_cost="medium",
-                combat_transfer="medium",
-            ),
-            make_exercise(
-                "Chest-Supported Row",
-                "horizontal_pull",
-                "secondary_lift",
-                3,
-                8,
-                12,
-                0,
-                7.5,
-                "Upper-back work.",
-                prescription_type="strength",
-                equipment="machine or bench + dumbbells",
-                modality="supported pull",
-                fatigue_cost="medium",
-                combat_transfer="high",
-            ),
-            make_exercise(
-                "Goblet Squat",
-                "squat",
-                "accessory",
-                2,
-                8,
-                12,
-                0,
-                6.5,
-                "Light lower-body work.",
-                prescription_type="strength",
-                equipment="dumbbell or kettlebell",
-                modality="free weight",
-                fatigue_cost="low",
-                combat_transfer="medium",
-            ),
+        plan.append(
+            slot("Main Strength", "hinge", "main_strength", "submax_strength", ["main_lift"], required=True, priority=2)
+        )
+
+    plan.extend(
+        [
+            slot("Upper Strength", "horizontal_push", "main_strength", "submax_strength", ["main_lift", "secondary_lift"], required=True, priority=3),
+            slot("Upper Back", "vertical_pull", "upper_back_accessory", "repeated_effort", ["main_lift", "secondary_lift", "accessory"], required=True, priority=4),
+            slot("Single-Leg / Lower Accessory", "single_leg", "single_leg_strength", "repeated_effort", ["accessory"], priority=5),
+            slot("Grip / GPP", "carry_grip", "grip_gpp", "gpp", ["gpp"], priority=6),
+            slot("Core", "core", "core_anti_rotation", "repeated_effort", ["accessory", "recovery_accessory"], priority=7),
+            slot("Mobility Finish", "mobility", "hip_controlled_mobility", "mobility_control", ["mobility"], priority=8),
+        ]
+    )
+
+    if workout_modifier in {"fun", "chaos"}:
+        plan.append(
+            slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], priority=9)
+        )
+
+    return plan
+
+
+def lower_strength_slot_plan(
+    readiness_category: str,
+    goal_today: str,
+    workout_modifier: str,
+    combat_later_today: bool,
+) -> list[dict[str, Any]]:
+    use_isometric = combat_later_today or readiness_category == "Yellow"
+    use_dynamic = readiness_category == "Green" and goal_today == "push" and not combat_later_today
+
+    plan = [
+        slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
+    ]
+
+    if use_dynamic:
+        plan.append(
+            slot("Dynamic Lower", "hinge", "dynamic_effort", "dynamic_effort", ["gpp"], priority=2)
+        )
+
+    if use_isometric:
+        plan.append(
+            slot("Lower Isometric Strength", "single_leg", "lower_isometric_strength", "overcoming_isometric", ["secondary_lift"], required=True, priority=2)
+        )
+    else:
+        plan.append(
+            slot("Main Squat Strength", "squat", "main_strength", "submax_strength", ["main_lift"], required=True, priority=2)
+        )
+
+    plan.extend(
+        [
+            slot("Posterior Chain", "hinge", "posterior_chain_accessory", "repeated_effort", ["secondary_lift", "accessory"], required=True, priority=3),
+            slot("Single-Leg Strength", "single_leg", "single_leg_strength", "repeated_effort", ["accessory"], priority=4),
+            slot("Hip Accessory", "hip_accessory", "hip_accessory", "repeated_effort", ["accessory"], priority=5),
+            slot("Core Brace", "core", "trunk_strength", "repeated_effort", ["accessory"], priority=6),
+            slot("Hip Mobility", "mobility", "hip_controlled_mobility", "mobility_control", ["mobility"], priority=7),
+            slot("Static Hip Stretch", "stretch", "static_hip_stretch", "recovery", ["stretch"], priority=8),
+        ]
+    )
+
+    if workout_modifier in {"fun", "chaos"}:
+        plan.append(
+            slot("Loaded GPP", "conditioning", "gpp_conditioning", "gpp", ["gpp", "cardio"], priority=9)
+        )
+
+    return plan
+
+
+def upper_strength_slot_plan(
+    readiness_category: str,
+    goal_today: str,
+    workout_modifier: str,
+    combat_later_today: bool,
+) -> list[dict[str, Any]]:
+    use_isometric = combat_later_today or readiness_category == "Yellow"
+
+    plan = [
+        slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
+    ]
+
+    if use_isometric:
+        plan.append(
+            slot("Upper Isometric Strength", "horizontal_push", "upper_isometric_strength", "overcoming_isometric", ["secondary_lift", "accessory"], required=True, priority=2)
+        )
+    else:
+        plan.append(
+            slot("Main Press Strength", "horizontal_push", "main_strength", "submax_strength", ["main_lift"], required=True, priority=2)
+        )
+
+    plan.extend(
+        [
+            slot("Main Pull Strength", "vertical_pull", "main_strength", "submax_strength", ["main_lift", "accessory"], required=True, priority=3),
+            slot("Upper Back", "horizontal_pull", "upper_back_accessory", "repeated_effort", ["secondary_lift", "accessory"], priority=4),
+            slot("Shoulder Accessory", "shoulder_accessory", "shoulder_accessory", "repeated_effort", ["accessory"], priority=5),
+            slot("Arm / Grip Accessory", "forearm_grip", "arm_grip_accessory", "repeated_effort", ["accessory"], priority=6),
+            slot("Core Anti-Rotation", "core", "core_anti_rotation", "repeated_effort", ["accessory"], priority=7),
+            slot("Shoulder Mobility", "mobility", "shoulder_controlled_mobility", "mobility_control", ["mobility", "stretch"], priority=8),
+        ]
+    )
+
+    if workout_modifier in {"fun", "chaos"}:
+        plan.append(
+            slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], priority=9)
+        )
+
+    return plan
+
+
+def grappling_strength_slot_plan(
+    readiness_category: str,
+    goal_today: str,
+    workout_modifier: str,
+    combat_later_today: bool,
+) -> list[dict[str, Any]]:
+    use_isometric = readiness_category == "Yellow" or combat_later_today
+    use_dynamic = readiness_category == "Green" and goal_today == "push" and not combat_later_today
+
+    plan = [
+        slot("Grappling Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
+    ]
+
+    if use_dynamic:
+        plan.append(
+            slot("Dynamic Hinge", "hinge", "dynamic_effort", "dynamic_effort", ["gpp"], priority=2)
+        )
+
+    if use_isometric:
+        plan.append(
+            slot("Isometric Pull / Hinge", "horizontal_pull", "upper_isometric_strength", "overcoming_isometric", ["secondary_lift", "accessory"], required=True, priority=2)
+        )
+    else:
+        plan.append(
+            slot("Main Hinge Strength", "hinge", "main_strength", "submax_strength", ["main_lift"], required=True, priority=2)
+        )
+
+    plan.extend(
+        [
+            slot("Main Pull", "vertical_pull", "main_strength", "submax_strength", ["main_lift", "accessory"], required=True, priority=3),
+            slot("Posterior Chain", "posterior_chain", "posterior_chain_accessory", "repeated_effort", ["secondary_lift", "accessory"], priority=4),
+            slot("Upper Back", "horizontal_pull", "upper_back_accessory", "repeated_effort", ["secondary_lift", "accessory"], priority=5),
+            slot("Grip / Carry", "carry_grip", "grip_gpp", "gpp", ["gpp"], priority=6),
+            slot("Neck Prep", "neck", "neck_prep", "yielding_isometric", ["recovery_accessory"], priority=7),
+            slot("Core Anti-Rotation", "core", "core_anti_rotation", "repeated_effort", ["accessory"], priority=8),
+            slot("Hip Mobility", "mobility", "hip_controlled_mobility", "mobility_control", ["mobility"], priority=9),
+        ]
+    )
+
+    if workout_modifier in {"fun", "chaos"}:
+        plan.append(
+            slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], priority=10)
+        )
+
+    return plan
+
+
+def accessory_slot_plan(workout_modifier: str) -> list[dict[str, Any]]:
+    plan = [
+        slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
+        slot("Upper Back", "horizontal_pull", "upper_back_accessory", "repeated_effort", ["secondary_lift", "accessory"], required=True, priority=2),
+        slot("Posterior Chain", "posterior_chain", "posterior_chain_accessory", "repeated_effort", ["accessory"], required=True, priority=3),
+        slot("Shoulders", "shoulder_accessory", "shoulder_accessory", "repeated_effort", ["accessory"], priority=4),
+        slot("Arms / Grip", "forearm_grip", "arm_grip_accessory", "repeated_effort", ["accessory"], priority=5),
+        slot("Core", "core", "trunk_strength", "repeated_effort", ["accessory"], priority=6),
+        slot("Grip GPP", "carry_grip", "grip_gpp", "gpp", ["gpp"], priority=7),
+        slot("Hip Accessory", "hip_accessory", "hip_accessory", "repeated_effort", ["accessory"], priority=8),
+        slot("Mobility Finish", "mobility", "upper_body_mobility", "recovery", ["mobility", "stretch"], priority=9),
+    ]
+
+    if workout_modifier in {"fun", "chaos"}:
+        plan.append(
+            slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], priority=10)
+        )
+
+    return plan
+
+
+def light_slot_plan(
+    focus: str,
+    workout_modifier: str,
+    combat_later_today: bool,
+    combat_last_24h: bool,
+) -> list[dict[str, Any]]:
+    if focus == "Upper emphasis":
+        return [
+            slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
+            slot("Low-Fatigue Press", "horizontal_push", "low_fatigue_upper", "repeated_effort", ["accessory", "secondary_lift"], required=True, priority=2),
+            slot("Upper Back", "horizontal_pull", "upper_back_accessory", "repeated_effort", ["accessory", "secondary_lift"], required=True, priority=3),
+            slot("Grip / Arms", "forearm_grip", "arm_grip_accessory", "repeated_effort", ["accessory"], priority=4),
+            slot("Core Anti-Rotation", "core", "core_anti_rotation", "repeated_effort", ["accessory"], priority=5),
+            slot("Shoulder Mobility", "mobility", "shoulder_controlled_mobility", "mobility_control", ["mobility", "stretch"], priority=6),
+            slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], priority=7),
         ]
 
-    exercises.extend(accessory_rotation(completed_count + 2, workout_modifier))
-    return trim_for_time(exercises, time_available)
+    if focus == "Lower emphasis":
+        return [
+            slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
+            slot("Low-Fatigue Squat", "squat", "low_fatigue_lower", "repeated_effort", ["accessory"], required=True, priority=2),
+            slot("Posterior Chain Blood Flow", "posterior_chain", "posterior_chain_blood_flow", "repeated_effort", ["accessory"], required=True, priority=3),
+            slot("Single-Leg", "single_leg", "single_leg_strength", "repeated_effort", ["accessory"], priority=4),
+            slot("Hip Mobility", "mobility", "hip_controlled_mobility", "mobility_control", ["mobility"], priority=5),
+            slot("Static Hip Stretch", "stretch", "static_hip_stretch", "recovery", ["stretch"], priority=6),
+            slot("Zone 2 Cardio", "conditioning", "zone2_cardio", "recovery", ["cardio"], priority=7),
+        ]
 
-
-def accessory_day_workout(time_available: int, workout_modifier: str = "normal") -> list[dict[str, Any]]:
-    completed_count = get_completed_workout_count()
-    body_pull_choice = vertical_pull_choice(completed_count + 3, weighted=False)
-    body_pull_name = body_pull_choice["name"]
-
-    exercises = [
-        make_exercise(
-            "Landmine Press",
-            "vertical_push",
-            "secondary_lift",
-            3,
-            8,
-            12,
-            0,
-            7.0,
-            "Athletic pressing without heavy fatigue.",
-            prescription_type="strength",
-            equipment="landmine",
-            modality="free weight",
-            fatigue_cost="medium",
-            combat_transfer="medium",
-        ),
-        make_exercise(
-            body_pull_name,
-            "vertical_pull",
-            "accessory",
-            3,
-            5,
-            10,
-            0,
-            7.5,
-            "Vertical pull variation.",
-            prescription_type="bodyweight",
-            equipment="pull-up bar",
-            modality="bodyweight",
-            fatigue_cost="medium",
-            combat_transfer="high",
-        ),
-        make_exercise(
-            "Chest-Supported Row",
-            "horizontal_pull",
-            "secondary_lift",
-            3,
-            8,
-            12,
-            0,
-            7.5,
-            "Upper-back volume.",
-            prescription_type="strength",
-            equipment="machine or bench + dumbbells",
-            modality="supported pull",
-            fatigue_cost="medium",
-            combat_transfer="high",
-        ),
-        make_exercise(
-            "Goblet Squat",
-            "squat",
-            "accessory",
-            3,
-            8,
-            12,
-            0,
-            6.5,
-            "Light lower-body work.",
-            prescription_type="strength",
-            equipment="dumbbell or kettlebell",
-            modality="free weight",
-            fatigue_cost="low",
-            combat_transfer="medium",
-        ),
-        make_exercise(
-            "Back Extension",
-            "posterior_chain",
-            "accessory",
-            3,
-            10,
-            15,
-            0,
-            7.0,
-            "Posterior-chain support.",
-            prescription_type="bodyweight",
-            equipment="back extension bench",
-            modality="bodyweight or loaded",
-            fatigue_cost="medium",
-            combat_transfer="high",
-        ),
-        make_exercise(
-            "Lateral Raise",
-            "shoulder_accessory",
-            "accessory",
-            2,
-            12,
-            20,
-            0,
-            7.0,
-            "Shoulder accessory.",
-            prescription_type="strength",
-            equipment="dumbbells or cable",
-            modality="isolation",
-            fatigue_cost="low",
-            combat_transfer="low",
-        ),
+    return [
+        slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
+        slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], required=True, priority=2),
+        slot("Upper Back", "horizontal_pull", "upper_back_accessory", "repeated_effort", ["accessory", "secondary_lift"], priority=3),
+        slot("Posterior Chain Blood Flow", "posterior_chain", "posterior_chain_blood_flow", "repeated_effort", ["accessory"], priority=4),
+        slot("Core Breathing", "core", "core_breathing", "recovery", ["recovery_accessory"], priority=5),
+        slot("Neck Prep", "neck", "neck_prep", "yielding_isometric", ["recovery_accessory"], priority=6),
+        slot("Hip Mobility", "mobility", "hip_controlled_mobility", "mobility_control", ["mobility"], priority=7),
+        slot("T-Spine Mobility", "mobility", "t_spine_mobility", "mobility_control", ["mobility"], priority=8),
     ]
 
-    exercises.extend(accessory_rotation(completed_count + 3, workout_modifier))
-    return trim_for_time(exercises, time_available)
 
-
-def red_day_workout(time_available: int, workout_modifier: str = "normal") -> list[dict[str, Any]]:
-    exercises = [
-        make_exercise(
-            "Incline Walk",
-            "conditioning",
-            "cardio",
-            1,
-            10,
-            20,
-            0,
-            4.0,
-            "Easy pace. Nasal breathing if possible.",
-            prescription_type="cardio",
-            equipment="treadmill",
-            modality="cyclical cardio",
-            fatigue_cost="low",
-            combat_transfer="medium",
-            duration_minutes=15,
-            heart_rate_target="Zone 2 or nasal breathing",
-            intensity_target="easy",
-        ),
-        make_exercise(
-            "Mobility Flow",
-            "mobility",
-            "mobility",
-            1,
-            5,
-            10,
-            0,
-            3.0,
-            "Move smoothly. Do not force range.",
-            prescription_type="mobility",
-            equipment="bodyweight",
-            modality="flow",
-            fatigue_cost="low",
-            combat_transfer="medium",
-            duration_minutes=8,
-            intensity_target="smooth and controlled",
-        ),
-        make_exercise(
-            "Hip Airplane",
-            "mobility",
-            "mobility",
-            2,
-            5,
-            8,
-            0,
-            4.0,
-            "Balance and hip control.",
-            prescription_type="mobility",
-            equipment="bodyweight",
-            modality="mobility",
-            fatigue_cost="low",
-            combat_transfer="medium",
-            intensity_target="controlled range",
-            side="each side",
-        ),
-        make_exercise(
-            "Back Extension",
-            "posterior_chain",
-            "accessory",
-            2,
-            10,
-            15,
-            0,
-            5.0,
-            "Very easy blood-flow work.",
-            prescription_type="bodyweight",
-            equipment="back extension bench",
-            modality="bodyweight",
-            fatigue_cost="low",
-            combat_transfer="high",
-        ),
-        make_exercise(
-            "Dead Bug",
-            "core",
-            "recovery_accessory",
-            2,
-            8,
-            12,
-            0,
-            4.0,
-            "Controlled breathing and bracing.",
-            prescription_type="mobility",
-            equipment="floor",
-            modality="bodyweight",
-            fatigue_cost="low",
-            combat_transfer="medium",
-            intensity_target="controlled breathing",
-        ),
-        make_exercise(
-            "Couch Stretch",
-            "stretch",
-            "stretch",
-            2,
-            45,
-            60,
-            0,
-            3.0,
-            "Open hips and quads. Keep breathing relaxed.",
-            prescription_type="stretch",
-            equipment="bench or wall",
-            modality="static stretch",
-            fatigue_cost="low",
-            combat_transfer="medium",
-            hold_seconds=60,
-            side="each side",
-            intensity_target="easy-moderate",
-        ),
-        make_exercise(
-            "Neck Isometrics",
-            "neck",
-            "recovery_accessory",
-            2,
-            10,
-            20,
-            0,
-            4.0,
-            "Light neck work.",
-            prescription_type="mobility",
-            equipment="bodyweight or hands",
-            modality="isometric",
-            fatigue_cost="low",
-            combat_transfer="high",
-            intensity_target="easy controlled pressure",
-        ),
+def deload_slot_plan(focus: str, workout_modifier: str) -> list[dict[str, Any]]:
+    return [
+        slot("Movement Prep", "mobility", "movement_prep", "movement_prep", ["mobility"], required=True, priority=1),
+        slot("Low-Fatigue Strength", "horizontal_pull", "upper_back_accessory", "repeated_effort", ["accessory", "secondary_lift"], required=True, priority=2),
+        slot("Posterior Chain Blood Flow", "posterior_chain", "posterior_chain_blood_flow", "repeated_effort", ["accessory"], priority=3),
+        slot("Grip / Carry", "carry_grip", "grip_gpp", "gpp", ["gpp"], priority=4),
+        slot("Core Breathing", "core", "core_breathing", "recovery", ["recovery_accessory"], priority=5),
+        slot("Hip Mobility", "mobility", "hip_controlled_mobility", "mobility_control", ["mobility"], priority=6),
+        slot("T-Spine Mobility", "mobility", "t_spine_mobility", "mobility_control", ["mobility"], priority=7),
+        slot("Static Stretch", "stretch", "static_hip_stretch", "recovery", ["stretch"], priority=8),
     ]
 
-    return trim_for_time(exercises, time_available)
+
+def recovery_slot_plan(workout_modifier: str) -> list[dict[str, Any]]:
+    plan = [
+        slot("Easy Cardio", "conditioning", "zone2_cardio", "recovery", ["cardio"], required=True, priority=1),
+        slot("Technical Cardio", "conditioning", "technical_cardio", "skill_conditioning", ["cardio"], priority=2),
+        slot("Hip Mobility", "mobility", "hip_controlled_mobility", "mobility_control", ["mobility"], required=True, priority=3),
+        slot("T-Spine Mobility", "mobility", "t_spine_mobility", "mobility_control", ["mobility"], priority=4),
+        slot("Shoulder Mobility", "mobility", "shoulder_controlled_mobility", "mobility_control", ["mobility", "stretch"], priority=5),
+        slot("Core Breathing", "core", "core_breathing", "recovery", ["recovery_accessory"], priority=6),
+        slot("Neck Prep", "neck", "neck_prep", "yielding_isometric", ["recovery_accessory"], priority=7),
+        slot("Upper Body Mobility", "stretch", "upper_body_mobility", "recovery", ["mobility", "stretch"], priority=8),
+        slot("Static Hip Stretch", "stretch", "static_hip_stretch", "recovery", ["stretch"], priority=9),
+        slot("Positional Breathing", "mobility", "positional_breathing", "recovery", ["mobility"], priority=10),
+    ]
+
+    if workout_modifier == "focus":
+        return [item for item in plan if item["priority"] <= 7]
+
+    return plan
 
 
-def trim_for_time(exercises: list[dict[str, Any]], time_available: int) -> list[dict[str, Any]]:
+def build_workout_from_slots(
+    slot_plan: list[dict[str, Any]],
+    readiness_category: str,
+    focus: str,
+    workout_modifier: str,
+    fatigue_budget: int,
+    time_available: int,
+) -> list[dict[str, Any]]:
+    selected = []
+    avoid_names = set()
+    current_fatigue = 0
+
+    sorted_slots = sorted(slot_plan, key=lambda item: item["priority"])
+
+    for item in sorted_slots:
+        exercise = select_exercise(
+            desired_pattern=item["desired_pattern"],
+            readiness_category=readiness_category,
+            focus=focus,
+            workout_modifier=workout_modifier,
+            allowed_categories=item.get("allowed_categories"),
+            allowed_prescription_types=item.get("allowed_types"),
+            avoid_names=avoid_names,
+            desired_session_slot=item.get("session_slot"),
+            desired_method_tag=item.get("method_tag"),
+        )
+
+        exercise_fatigue = int(exercise.get("fatigue_points", 3))
+        would_exceed_budget = current_fatigue + exercise_fatigue > fatigue_budget
+
+        if item.get("required", False):
+            selected.append(add_slot_metadata(exercise, item))
+            avoid_names.add(exercise["exercise_name"])
+            current_fatigue += exercise_fatigue
+            continue
+
+        if not would_exceed_budget:
+            selected.append(add_slot_metadata(exercise, item))
+            avoid_names.add(exercise["exercise_name"])
+            current_fatigue += exercise_fatigue
+
+    return trim_by_time_and_fatigue(
+        exercises=selected,
+        time_available=time_available,
+        readiness_category=readiness_category,
+    )
+
+
+def add_slot_metadata(exercise: dict[str, Any], slot_item: dict[str, Any]) -> dict[str, Any]:
+    updated = exercise.copy()
+    updated["selected_for_slot"] = slot_item["name"]
+    return updated
+
+
+def finalize_selected_exercises(
+    exercises: list[dict[str, Any]],
+    readiness_category: str,
+    workout_modifier: str,
+) -> list[dict[str, Any]]:
+    finalized = []
+
+    for exercise in exercises:
+        finalized.append(apply_training_prescription(exercise, readiness_category, workout_modifier))
+
+    return finalized
+
+
+def apply_training_prescription(
+    exercise: dict[str, Any],
+    readiness_category: str,
+    workout_modifier: str,
+) -> dict[str, Any]:
+    updated = exercise.copy()
+
+    name = updated["exercise_name"]
+    category = updated["exercise_category"]
+    prescription_type = updated["prescription_type"]
+    method_tag = updated.get("method_tag", "")
+
+    if category == "main_lift":
+        fallback = DEFAULT_TRAINING_LOADS.get(name, 0)
+        updated["planned_weight"] = safe_main_lift_load(name, readiness_category, fallback)
+
+        if readiness_category == "Green":
+            updated["planned_sets"] = 4 if workout_modifier != "focus" else 3
+            updated["target_rpe"] = 8.0
+        elif readiness_category == "Yellow":
+            updated["planned_sets"] = 3
+            updated["target_rpe"] = 7.5
+        else:
+            updated["planned_sets"] = 2
+            updated["target_rpe"] = 6.5
+
+    elif method_tag == "overcoming_isometric":
+        if readiness_category == "Green":
+            updated["planned_sets"] = 4
+            updated["target_rpe"] = 8.5
+            updated["hold_seconds"] = 5
+        elif readiness_category == "Yellow":
+            updated["planned_sets"] = 3
+            updated["target_rpe"] = 8.0
+            updated["hold_seconds"] = 5
+        else:
+            updated["planned_sets"] = 2
+            updated["target_rpe"] = 6.5
+            updated["hold_seconds"] = 4
+
+    elif category == "secondary_lift":
+        if readiness_category == "Green":
+            updated["planned_sets"] = 3
+            updated["target_rpe"] = max(float(updated.get("target_rpe", 7.5)), 7.5)
+        elif readiness_category == "Yellow":
+            updated["planned_sets"] = 3
+            updated["target_rpe"] = min(float(updated.get("target_rpe", 7.0)), 7.5)
+        else:
+            updated["planned_sets"] = 2
+            updated["target_rpe"] = min(float(updated.get("target_rpe", 6.5)), 6.5)
+
+    elif category in {"accessory", "gpp"}:
+        if workout_modifier == "focus":
+            updated["planned_sets"] = max(1, min(int(updated.get("planned_sets", 2)), 2))
+        elif workout_modifier == "fun":
+            updated["planned_sets"] = min(int(updated.get("planned_sets", 3)) + 1, 4)
+        else:
+            updated["planned_sets"] = int(updated.get("planned_sets", 2))
+
+    elif prescription_type in {"mobility", "stretch", "cardio", "cardio_skill"}:
+        updated["target_rpe"] = min(float(updated.get("target_rpe", 5.0)), 5.5)
+
+    if prescription_type == "cardio_skill":
+        if readiness_category in {"Orange", "Red"}:
+            updated["target_rpe"] = min(float(updated.get("target_rpe", 5.0)), 5.0)
+            updated["intensity_target"] = "RPE 4-5, technical quality only"
+
+    if workout_modifier == "chaos" and category in {"accessory", "gpp", "mobility", "cardio"}:
+        updated["notes"] = updated.get("notes", "") + " Chaos mode: keep it safe, but make the variation interesting."
+
+    return updated
+
+
+def determine_workout_type(
+    readiness_category: str,
+    focus: str,
+    goal_today: str,
+    deload: bool,
+    template_key: str,
+    exercises: list[dict[str, Any]],
+) -> str:
+    method_tags = {exercise.get("method_tag", "") for exercise in exercises}
+
+    if deload:
+        return "Deload / Low-Fatigue Full Body"
+
+    if readiness_category == "Red" or goal_today == "recovery" or template_key == "recovery":
+        return "Recovery / Mobility"
+
+    if "overcoming_isometric" in method_tags:
+        return "Isometric Strength / Combat Support"
+
+    if "dynamic_effort" in method_tags:
+        return "Dynamic Effort / Athletic Strength"
+
+    if focus == "Accessory / pump":
+        return "Accessory / Armor Building"
+
+    if readiness_category == "Orange":
+        return "Light / Technical Support"
+
+    return "Full-Body Strength"
+
+
+def build_generation_reason(
+    readiness_category: str,
+    focus: str,
+    goal_today: str,
+    workout_modifier: str,
+    fatigue_budget: int,
+    checkin: dict[str, Any],
+    deload: bool,
+    exercises: list[dict[str, Any]],
+) -> str:
+    estimated_fatigue = sum(int(exercise.get("fatigue_points", 3)) for exercise in exercises)
+
+    reason = (
+        f"The app built this using a fatigue budget of {fatigue_budget} and selected "
+        f"{estimated_fatigue} estimated fatigue points. "
+    )
+
+    reason += f"Readiness is {readiness_category}, focus is {focus}, and goal today is {goal_today}. "
+
+    if deload:
+        reason += "Deload logic is active, so the app reduced heavy strength exposure. "
+
+    if checkin.get("combat_later_today"):
+        reason += "Because combat training is later today, the app biased lower-fatigue and technical work. "
+
+    if checkin.get("hard_sparring_last_24h"):
+        reason += "Because hard sparring/rolling happened recently, the app reduced high-fatigue selections. "
+
+    if workout_modifier == "focus":
+        reason += "Focus mode kept the session tighter and more direct."
+    elif workout_modifier == "fun":
+        reason += "Fun mode allowed more variety and technical-cardio options."
+    elif workout_modifier == "chaos":
+        reason += "Chaos mode biased unusual but still safe options."
+    else:
+        reason += "Normal mode balanced strength, combat support, and recovery."
+
+    return reason
+
+
+def is_low_fatigue_exercise(exercise: dict[str, Any]) -> bool:
+    prescription_type = exercise.get("prescription_type", "strength")
+    fatigue_points = int(exercise.get("fatigue_points", 3))
+    target_rpe = float(exercise.get("target_rpe", 7.0))
+
+    if fatigue_points <= 2:
+        return True
+
+    if prescription_type in {"mobility", "stretch", "cardio", "cardio_skill"} and target_rpe <= 5.5:
+        return True
+
+    return False
+
+
+def trim_by_time_and_fatigue(
+    exercises: list[dict[str, Any]],
+    time_available: int,
+    readiness_category: str,
+) -> list[dict[str, Any]]:
+    if not exercises:
+        return exercises
+
+    low_fatigue_count = sum(1 for exercise in exercises if is_low_fatigue_exercise(exercise))
+    low_fatigue_ratio = low_fatigue_count / len(exercises)
+
+    if low_fatigue_ratio >= 0.75:
+        if time_available <= 30:
+            return exercises[:5]
+        if time_available <= 45:
+            return exercises[:7]
+        if time_available <= 60:
+            return exercises[:9]
+        return exercises[:10]
+
+    if low_fatigue_ratio >= 0.50:
+        if time_available <= 30:
+            return exercises[:4]
+        if time_available <= 45:
+            return exercises[:6]
+        if time_available <= 60:
+            return exercises[:8]
+        return exercises[:9]
+
     if time_available <= 30:
         return exercises[:4]
 
@@ -1654,4 +966,4 @@ def trim_for_time(exercises: list[dict[str, Any]], time_available: int) -> list[
     if time_available <= 60:
         return exercises[:6]
 
-    return exercises
+    return exercises[:7]
