@@ -1,6 +1,6 @@
 import streamlit as st
 
-from src.database import init_db
+from src.database import init_db, get_active_user_id, get_user_by_id
 from src.analytics import (
     calculate_readiness_summary,
     calculate_bodyweight_trend,
@@ -17,15 +17,22 @@ from src.export_utils import (
     get_export_tables,
     dataframe_to_csv_bytes,
 )
+from src.ui import page_header
 
 
 st.set_page_config(page_title="Export Center", page_icon="📥", layout="wide")
 
 init_db()
 
-st.title("Export Center")
+active_user_id = get_active_user_id()
+active_user = get_user_by_id(active_user_id)
+active_name = active_user["display_name"] if active_user else "User"
+safe_name = active_name.lower().replace(" ", "_")
 
-st.write("Download your training data as Excel, CSV files, and PNG charts.")
+page_header(
+    "Export Center",
+    f"Download training data, CSV files, and PNG charts for {active_name}.",
+)
 
 st.warning(
     "This app uses local SQLite storage. On Streamlit Community Cloud, use exports regularly as backups."
@@ -33,21 +40,21 @@ st.warning(
 
 st.divider()
 
-st.subheader("Full Excel Backup")
+st.subheader(f"Full Excel Backup — {active_name}")
 
 excel_file = build_excel_export()
 
 st.download_button(
-    label="Download Full Excel Workbook",
+    label=f"Download {active_name}'s Full Excel Workbook",
     data=excel_file,
-    file_name="combat_athlete_training_export.xlsx",
+    file_name=f"{safe_name}_combat_athlete_training_export.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     use_container_width=True,
 )
 
 st.divider()
 
-st.subheader("CSV Table Downloads")
+st.subheader(f"CSV Table Downloads — {active_name}")
 
 tables = get_export_tables()
 
@@ -59,21 +66,21 @@ selected_table_name = st.selectbox(
 selected_table = tables[selected_table_name]
 
 if selected_table.empty:
-    st.info("Selected table has no data yet.")
+    st.info("Selected table has no data yet for this profile.")
 else:
     st.dataframe(selected_table, use_container_width=True, hide_index=True)
 
     st.download_button(
         label=f"Download {selected_table_name}.csv",
         data=dataframe_to_csv_bytes(selected_table),
-        file_name=f"{selected_table_name}.csv",
+        file_name=f"{safe_name}_{selected_table_name}.csv",
         mime="text/csv",
         use_container_width=True,
     )
 
 st.divider()
 
-st.subheader("PNG Chart Downloads")
+st.subheader(f"PNG Chart Downloads — {active_name}")
 
 readiness = calculate_readiness_summary()
 bodyweight = calculate_bodyweight_trend()
@@ -85,7 +92,7 @@ col1, col2 = st.columns(2)
 
 with col1:
     readiness_png = plotly_to_matplotlib_png_bytes(
-        title="Readiness Score Over Time",
+        title=f"{active_name} Readiness Score Over Time",
         df=readiness,
         x_col="date",
         y_col="readiness_score",
@@ -94,13 +101,13 @@ with col1:
     st.download_button(
         label="Download Readiness Chart PNG",
         data=readiness_png,
-        file_name="readiness_score_trend.png",
+        file_name=f"{safe_name}_readiness_score_trend.png",
         mime="image/png",
         use_container_width=True,
     )
 
     bodyweight_png = plotly_to_matplotlib_png_bytes(
-        title="Bodyweight Over Time",
+        title=f"{active_name} Bodyweight Over Time",
         df=bodyweight,
         x_col="date",
         y_col="bodyweight",
@@ -109,13 +116,13 @@ with col1:
     st.download_button(
         label="Download Bodyweight Chart PNG",
         data=bodyweight_png,
-        file_name="bodyweight_trend.png",
+        file_name=f"{safe_name}_bodyweight_trend.png",
         mime="image/png",
         use_container_width=True,
     )
 
     avg_rpe_png = plotly_to_matplotlib_png_bytes(
-        title="Average RPE by Exercise",
+        title=f"{active_name} Average RPE by Exercise",
         df=avg_rpe,
         x_col="exercise_name",
         y_col="avg_rpe",
@@ -124,14 +131,14 @@ with col1:
     st.download_button(
         label="Download Average RPE Chart PNG",
         data=avg_rpe_png,
-        file_name="average_rpe_by_exercise.png",
+        file_name=f"{safe_name}_average_rpe_by_exercise.png",
         mime="image/png",
         use_container_width=True,
     )
 
 with col2:
     e1rm_png = grouped_line_png_bytes(
-        title="Estimated 1RM Over Time",
+        title=f"{active_name} Estimated 1RM Over Time",
         df=e1rm,
         x_col="date",
         y_col="best_estimated_1rm",
@@ -141,13 +148,13 @@ with col2:
     st.download_button(
         label="Download Estimated 1RM Chart PNG",
         data=e1rm_png,
-        file_name="estimated_1rm_trend.png",
+        file_name=f"{safe_name}_estimated_1rm_trend.png",
         mime="image/png",
         use_container_width=True,
     )
 
     weekly_volume_png = grouped_line_png_bytes(
-        title="Weekly Volume by Movement Pattern",
+        title=f"{active_name} Weekly Volume by Movement Pattern",
         df=weekly_volume,
         x_col="week",
         y_col="total_volume",
@@ -157,7 +164,7 @@ with col2:
     st.download_button(
         label="Download Weekly Volume Chart PNG",
         data=weekly_volume_png,
-        file_name="weekly_volume_by_movement_pattern.png",
+        file_name=f"{safe_name}_weekly_volume_by_movement_pattern.png",
         mime="image/png",
         use_container_width=True,
     )
@@ -165,5 +172,5 @@ with col2:
 st.divider()
 
 st.info(
-    "Excel export includes raw logs, progression state, summaries, readiness trends, estimated 1RM data, and weekly volume tables."
+    "Excel export includes raw logs, progression state, summaries, readiness trends, estimated 1RM data, and weekly volume tables for the active profile."
 )
