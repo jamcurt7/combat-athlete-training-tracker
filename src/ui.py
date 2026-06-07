@@ -105,13 +105,22 @@ def inject_global_styles() -> None:
             letter-spacing: 0.02em;
         }
 
-        .mission-card {
+        .mission-card,
+        .logic-card,
+        .summary-card {
             background:
+                radial-gradient(circle at top right, rgba(0,245,212,0.08), transparent 34%),
                 linear-gradient(135deg, rgba(22,11,46,0.92), rgba(9,5,15,0.98));
             border: 1px solid rgba(0,245,212,0.16);
             border-radius: 22px;
             padding: 1.1rem 1.25rem;
             margin-bottom: 1rem;
+        }
+
+        .logic-card h4,
+        .summary-card h4 {
+            margin-top: 0;
+            color: #F8FAFC;
         }
 
         .readiness-panel {
@@ -144,7 +153,9 @@ def inject_global_styles() -> None:
             margin-bottom: 0.9rem;
         }
 
-        .prescription-chip {
+        .prescription-chip,
+        .tech-chip,
+        .logic-chip {
             display: inline-block;
             padding: 0.32rem 0.58rem;
             border-radius: 999px;
@@ -152,25 +163,26 @@ def inject_global_styles() -> None:
             font-weight: 900;
             letter-spacing: 0.03em;
             text-transform: uppercase;
+            margin-bottom: 0.45rem;
+            margin-right: 0.35rem;
+        }
+
+        .prescription-chip {
             background: rgba(0,245,212,0.10);
             border: 1px solid rgba(0,245,212,0.26);
             color: #5FFFEA;
-            margin-bottom: 0.45rem;
         }
 
         .tech-chip {
-            display: inline-block;
-            padding: 0.22rem 0.48rem;
-            border-radius: 999px;
-            font-size: 0.72rem;
-            font-weight: 900;
-            letter-spacing: 0.03em;
-            text-transform: uppercase;
             background: rgba(245,158,11,0.12);
             border: 1px solid rgba(245,158,11,0.32);
             color: #FCD34D;
-            margin-left: 0.35rem;
-            margin-bottom: 0.45rem;
+        }
+
+        .logic-chip {
+            background: rgba(124,58,237,0.16);
+            border: 1px solid rgba(124,58,237,0.35);
+            color: #D8B4FE;
         }
 
         .small-label {
@@ -185,6 +197,13 @@ def inject_global_styles() -> None:
         .muted-text {
             color: rgba(216,180,254,0.86);
             font-size: 0.96rem;
+        }
+
+        .logic-line {
+            color: rgba(248,250,252,0.88);
+            font-size: 0.95rem;
+            line-height: 1.55;
+            margin-bottom: 0.3rem;
         }
 
         .green-badge,
@@ -238,13 +257,6 @@ def inject_global_styles() -> None:
             margin: 0.75rem 0 1rem 0;
         }
 
-        .how-to-header {
-            color: #F8FAFC;
-            font-weight: 900;
-            font-size: 1.02rem;
-            margin-bottom: 0.4rem;
-        }
-
         .how-to-section-title {
             color: #00F5D4;
             font-weight: 900;
@@ -285,6 +297,12 @@ def inject_global_styles() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def clean_label(value: str | int | float | None) -> str:
+    if value in [None, ""]:
+        return "—"
+    return str(value).replace("_", " ").title()
 
 
 def asset_to_base64(filename: str) -> str:
@@ -348,16 +366,13 @@ def readiness_panel(
     focus: str = "",
 ) -> None:
     st.markdown('<div class="readiness-panel">', unsafe_allow_html=True)
-
     readiness_badge(category, score)
-
     st.markdown("### Today’s Readiness")
     if workout_type:
         st.write(f"**Recommended mode:** {workout_type}")
     if focus:
         st.write(f"**Training focus:** {focus}")
     st.markdown(f"<div class='muted-text'>{explanation}</div>", unsafe_allow_html=True)
-
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -394,18 +409,6 @@ def command_card(
                 <div class="command-card-footer">{button_label} →</div>
             </div>
         </a>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def mini_stat(label: str, value: str) -> None:
-    st.markdown(
-        f"""
-        <div class="mini-stat">
-            <div class="mini-stat-label">{label}</div>
-            <div class="mini-stat-value">{value}</div>
-        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -462,7 +465,6 @@ def step_navigation(active_step: int) -> None:
 
 def get_prescription_type(exercise: dict) -> str:
     explicit_type = exercise.get("prescription_type")
-
     if explicit_type:
         return str(explicit_type)
 
@@ -507,7 +509,6 @@ def prescription_label(prescription_type: str) -> str:
         "recovery": "Recovery",
         "isometric": "Isometric",
     }
-
     return label_map.get(prescription_type, prescription_type.title())
 
 
@@ -606,8 +607,7 @@ def get_metadata_pills(exercise: dict) -> list[str]:
     pills = []
 
     for key in [
-        "equipment",
-        "modality",
+        "selected_for_slot",
         "method_tag",
         "session_slot",
         "fatigue_points",
@@ -617,7 +617,7 @@ def get_metadata_pills(exercise: dict) -> list[str]:
         value = exercise.get(key)
         if value not in [None, ""]:
             label = key.replace("_", " ").title()
-            pills.append(f"{label}: {value}")
+            pills.append(f"{label}: {clean_label(value)}")
 
     return pills
 
@@ -630,7 +630,7 @@ def exercise_needs_how_to(exercise: dict) -> bool:
     prescription_type = str(exercise.get("prescription_type", "")).lower()
     session_slot = str(exercise.get("session_slot", "")).lower()
 
-    always_common = {
+    common = {
         "bench press",
         "squat",
         "trap bar deadlift",
@@ -661,10 +661,10 @@ def exercise_needs_how_to(exercise: dict) -> bool:
         "incline walk",
     }
 
-    if name in always_common:
+    if name in common:
         return False
 
-    technical_keywords = [
+    keywords = [
         "car",
         "cars",
         "pails",
@@ -697,7 +697,7 @@ def exercise_needs_how_to(exercise: dict) -> bool:
 
     combined = " ".join([name, method_tag, mobility_style, modality, prescription_type, session_slot])
 
-    if any(keyword in combined for keyword in technical_keywords):
+    if any(keyword in combined for keyword in keywords):
         return True
 
     if prescription_type in {"mobility", "stretch", "cardio_skill", "isometric"}:
@@ -1030,7 +1030,8 @@ def compact_exercise_card(exercise: dict, index: int) -> None:
     }
 
     border_color = border_color_map.get(str(category), "#00F5D4")
-    technical_chip = "<span class='tech-chip'>How-to available</span>" if exercise_needs_how_to(exercise) else ""
+    technical_chip = "<span class='tech-chip'>How-To Available</span>" if exercise_needs_how_to(exercise) else ""
+    method_chip = f"<span class='logic-chip'>{clean_label(exercise.get('method_tag'))}</span>" if exercise.get("method_tag") else ""
 
     st.markdown(
         f"""
@@ -1042,8 +1043,9 @@ def compact_exercise_card(exercise: dict, index: int) -> None:
     st.markdown(
         f"""
         <span class="prescription-chip">{prescription}</span>
+        {method_chip}
         {technical_chip}
-        <div class="small-label">{exercise.get("movement_pattern", "movement")} · {category_label}</div>
+        <div class="small-label">{clean_label(exercise.get("movement_pattern", "movement"))} · {category_label}</div>
         <h3>{index}. {exercise.get("exercise_name", "Exercise")}</h3>
         """,
         unsafe_allow_html=True,
@@ -1065,6 +1067,175 @@ def compact_exercise_card(exercise: dict, index: int) -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
     render_how_to_expander(exercise, index)
+
+
+def workout_intelligence_summary(workout: dict, checkin: dict) -> None:
+    exercises = workout.get("exercises", [])
+    method_tags = [exercise.get("method_tag", "") for exercise in exercises if exercise.get("method_tag")]
+    session_slots = [exercise.get("selected_for_slot", exercise.get("session_slot", "")) for exercise in exercises]
+    estimated_fatigue = workout.get("estimated_fatigue", sum(int(exercise.get("fatigue_points", 3)) for exercise in exercises))
+    fatigue_budget = workout.get("fatigue_budget", "—")
+
+    primary_methods = []
+    for method in method_tags:
+        pretty = clean_label(method)
+        if pretty not in primary_methods:
+            primary_methods.append(pretty)
+
+    primary_slots = []
+    for slot_name in session_slots:
+        pretty = clean_label(slot_name)
+        if pretty and pretty != "—" and pretty not in primary_slots:
+            primary_slots.append(pretty)
+
+    st.markdown('<div class="summary-card">', unsafe_allow_html=True)
+    st.markdown("<h4>Workout Intelligence Summary</h4>", unsafe_allow_html=True)
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Session", workout.get("session_type", "Main Workout"))
+
+    with col2:
+        st.metric("Fatigue", f"{estimated_fatigue} / {fatigue_budget}")
+
+    with col3:
+        st.metric("Readiness", workout.get("readiness_category", checkin.get("readiness_category", "—")))
+
+    with col4:
+        st.metric("Modifier", clean_label(workout.get("workout_modifier", "normal")))
+
+    if primary_methods:
+        st.markdown(
+            f"<div class='logic-line'><b>Primary methods:</b> {', '.join(primary_methods[:5])}</div>",
+            unsafe_allow_html=True,
+        )
+
+    if primary_slots:
+        st.markdown(
+            f"<div class='logic-line'><b>Session priorities:</b> {', '.join(primary_slots[:7])}</div>",
+            unsafe_allow_html=True,
+        )
+
+    if workout.get("generation_reason"):
+        st.markdown(
+            f"<div class='logic-line'><b>Coach logic:</b> {workout.get('generation_reason')}</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def workout_training_logic_expander(workout: dict, checkin: dict) -> None:
+    exercises = workout.get("exercises", [])
+
+    with st.expander("Show training logic", expanded=False):
+        st.markdown('<div class="logic-card">', unsafe_allow_html=True)
+        st.markdown("<h4>How this workout was built</h4>", unsafe_allow_html=True)
+
+        st.markdown(
+            f"<div class='logic-line'><b>Session type:</b> {workout.get('session_type', 'Main Workout')}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div class='logic-line'><b>Training focus:</b> {workout.get('focus', '—')}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div class='logic-line'><b>Readiness category:</b> {workout.get('readiness_category', checkin.get('readiness_category', '—'))}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div class='logic-line'><b>Goal today:</b> {checkin.get('goal_today', '—')}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div class='logic-line'><b>Combat context:</b> Last 24h = {checkin.get('combat_last_24h', False)}, hard sparring = {checkin.get('hard_sparring_last_24h', False)}, later today = {checkin.get('combat_later_today', False)}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div class='logic-line'><b>Fatigue budget:</b> {workout.get('estimated_fatigue', '—')} used out of {workout.get('fatigue_budget', '—')}</div>",
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("<div class='how-to-section-title'>Exercise Slot Map</div>", unsafe_allow_html=True)
+
+        for index, exercise in enumerate(exercises, start=1):
+            slot_name = exercise.get("selected_for_slot", exercise.get("session_slot", "—"))
+            method = exercise.get("method_tag", "—")
+            fatigue = exercise.get("fatigue_points", "—")
+            reason = exercise.get("selection_reason", "")
+
+            st.markdown(
+                f"<div class='logic-line'><b>{index}. {exercise.get('exercise_name', 'Exercise')}</b> — "
+                f"{clean_label(slot_name)} · {clean_label(method)} · Fatigue {fatigue}</div>",
+                unsafe_allow_html=True,
+            )
+
+            if reason:
+                st.markdown(
+                    f"<div class='muted-text'>{reason}</div>",
+                    unsafe_allow_html=True,
+                )
+
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def exercise_intelligence_panel(exercise: dict) -> None:
+    selected_for = exercise.get("selected_for_slot")
+    method = exercise.get("method_tag")
+    slot_name = exercise.get("session_slot")
+    fatigue = exercise.get("fatigue_points")
+    combat_transfer = exercise.get("combat_transfer")
+    technical_transfer = exercise.get("technical_transfer")
+    reason = exercise.get("selection_reason")
+
+    with st.expander("Why this exercise?", expanded=False):
+        st.markdown('<div class="logic-card">', unsafe_allow_html=True)
+
+        if selected_for:
+            st.markdown(
+                f"<div class='logic-line'><b>Selected for:</b> {clean_label(selected_for)}</div>",
+                unsafe_allow_html=True,
+            )
+
+        if method:
+            st.markdown(
+                f"<div class='logic-line'><b>Training method:</b> {clean_label(method)}</div>",
+                unsafe_allow_html=True,
+            )
+
+        if slot_name:
+            st.markdown(
+                f"<div class='logic-line'><b>Session slot:</b> {clean_label(slot_name)}</div>",
+                unsafe_allow_html=True,
+            )
+
+        if fatigue not in [None, ""]:
+            st.markdown(
+                f"<div class='logic-line'><b>Fatigue points:</b> {fatigue}</div>",
+                unsafe_allow_html=True,
+            )
+
+        if combat_transfer:
+            st.markdown(
+                f"<div class='logic-line'><b>Combat transfer:</b> {clean_label(combat_transfer)}</div>",
+                unsafe_allow_html=True,
+            )
+
+        if technical_transfer:
+            st.markdown(
+                f"<div class='logic-line'><b>Technical transfer:</b> {clean_label(technical_transfer)}</div>",
+                unsafe_allow_html=True,
+            )
+
+        if reason:
+            st.markdown(
+                f"<div class='logic-line'><b>Reason:</b> {reason}</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def action_panel_start() -> None:
