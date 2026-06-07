@@ -132,6 +132,15 @@ def inject_global_styles() -> None:
             border-bottom: 1px solid rgba(255,255,255,0.085);
             border-radius: 18px;
             padding: 1.05rem 1.15rem;
+            margin-bottom: 0.45rem;
+        }
+
+        .how-to-shell {
+            background: linear-gradient(135deg, rgba(0,245,212,0.045), rgba(124,58,237,0.06));
+            border: 1px solid rgba(0,245,212,0.12);
+            border-radius: 16px;
+            padding: 0.85rem 1rem;
+            margin-top: 0.35rem;
             margin-bottom: 0.9rem;
         }
 
@@ -149,6 +158,21 @@ def inject_global_styles() -> None:
             margin-bottom: 0.45rem;
         }
 
+        .tech-chip {
+            display: inline-block;
+            padding: 0.22rem 0.48rem;
+            border-radius: 999px;
+            font-size: 0.72rem;
+            font-weight: 900;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+            background: rgba(245,158,11,0.12);
+            border: 1px solid rgba(245,158,11,0.32);
+            color: #FCD34D;
+            margin-left: 0.35rem;
+            margin-bottom: 0.45rem;
+        }
+
         .small-label {
             color: rgba(216,180,254,0.82);
             font-size: 0.75rem;
@@ -161,28 +185,6 @@ def inject_global_styles() -> None:
         .muted-text {
             color: rgba(216,180,254,0.86);
             font-size: 0.96rem;
-        }
-
-        .mini-stat {
-            background: rgba(0,0,0,0.22);
-            border: 1px solid rgba(0,245,212,0.10);
-            border-radius: 14px;
-            padding: 0.75rem;
-            text-align: center;
-        }
-
-        .mini-stat-label {
-            color: rgba(216,180,254,0.78);
-            font-size: 0.72rem;
-            font-weight: 800;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-        }
-
-        .mini-stat-value {
-            color: #F8FAFC;
-            font-size: 1.25rem;
-            font-weight: 900;
         }
 
         .green-badge,
@@ -234,6 +236,29 @@ def inject_global_styles() -> None:
             border-radius: 20px;
             padding: 1rem;
             margin: 0.75rem 0 1rem 0;
+        }
+
+        .how-to-header {
+            color: #F8FAFC;
+            font-weight: 900;
+            font-size: 1.02rem;
+            margin-bottom: 0.4rem;
+        }
+
+        .how-to-section-title {
+            color: #00F5D4;
+            font-weight: 900;
+            font-size: 0.88rem;
+            margin-top: 0.6rem;
+            margin-bottom: 0.2rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .how-to-text {
+            color: rgba(248,250,252,0.88);
+            font-size: 0.95rem;
+            line-height: 1.55;
         }
 
         @media (max-width: 768px) {
@@ -457,6 +482,9 @@ def get_prescription_type(exercise: dict) -> str:
     if "carry" in movement or "carry" in name:
         return "carry"
 
+    if "isometric" in name:
+        return "isometric"
+
     if exercise.get("planned_weight", 0) and float(exercise.get("planned_weight", 0)) > 0:
         return "strength"
 
@@ -474,8 +502,10 @@ def prescription_label(prescription_type: str) -> str:
         "mobility": "Mobility",
         "stretch": "Stretch",
         "cardio": "Cardio",
+        "cardio_skill": "Technical Cardio",
         "conditioning": "Conditioning",
         "recovery": "Recovery",
+        "isometric": "Isometric",
     }
 
     return label_map.get(prescription_type, prescription_type.title())
@@ -495,7 +525,7 @@ def get_exercise_stat_blocks(exercise: dict) -> list[tuple[str, str]]:
     heart_rate_target = exercise.get("heart_rate_target")
     intensity_target = exercise.get("intensity_target")
 
-    if prescription_type == "cardio":
+    if prescription_type in {"cardio", "cardio_skill"}:
         duration_text = f"{duration} min" if duration else f"{reps_min}-{reps_max} min"
         return [
             ("Duration", duration_text),
@@ -513,9 +543,16 @@ def get_exercise_stat_blocks(exercise: dict) -> list[tuple[str, str]]:
         ]
 
     if prescription_type == "mobility":
+        if hold_seconds:
+            time_text = f"{hold_seconds} sec"
+        elif duration:
+            time_text = f"{duration} min"
+        else:
+            time_text = f"{reps_min}-{reps_max}"
+
         return [
             ("Rounds", str(sets)),
-            ("Time/Reps", f"{reps_min}-{reps_max}"),
+            ("Time/Reps", time_text),
             ("Intensity", intensity_target or "Easy"),
             ("RPE", str(target_rpe)),
         ]
@@ -535,6 +572,15 @@ def get_exercise_stat_blocks(exercise: dict) -> list[tuple[str, str]]:
             ("Sets", str(sets)),
             ("Distance/Time", distance or f"{reps_min}-{reps_max} sec"),
             ("Load", load_text),
+            ("RPE", str(target_rpe)),
+        ]
+
+    if prescription_type == "isometric":
+        hold_text = f"{hold_seconds} sec" if hold_seconds else f"{reps_min}-{reps_max} sec"
+        return [
+            ("Sets", str(sets)),
+            ("Hold", hold_text),
+            ("Intent", exercise.get("intensity_target", f"RPE {target_rpe}")),
             ("RPE", str(target_rpe)),
         ]
 
@@ -562,15 +608,403 @@ def get_metadata_pills(exercise: dict) -> list[str]:
     for key in [
         "equipment",
         "modality",
-        "fatigue_cost",
+        "method_tag",
+        "session_slot",
+        "fatigue_points",
         "combat_transfer",
+        "technical_transfer",
     ]:
         value = exercise.get(key)
-        if value:
+        if value not in [None, ""]:
             label = key.replace("_", " ").title()
             pills.append(f"{label}: {value}")
 
     return pills
+
+
+def exercise_needs_how_to(exercise: dict) -> bool:
+    name = str(exercise.get("exercise_name", "")).lower()
+    method_tag = str(exercise.get("method_tag", "")).lower()
+    mobility_style = str(exercise.get("mobility_style", "")).lower()
+    modality = str(exercise.get("modality", "")).lower()
+    prescription_type = str(exercise.get("prescription_type", "")).lower()
+    session_slot = str(exercise.get("session_slot", "")).lower()
+
+    always_common = {
+        "bench press",
+        "squat",
+        "trap bar deadlift",
+        "weighted pull-up",
+        "weighted chin-up",
+        "pull-up",
+        "chin-up",
+        "neutral-grip pull-up",
+        "db row",
+        "chest-supported row",
+        "lat pulldown",
+        "db bench press",
+        "incline db bench",
+        "landmine press",
+        "db shoulder press",
+        "push-up",
+        "goblet squat",
+        "step-up",
+        "split squat",
+        "reverse lunge",
+        "romanian deadlift",
+        "back extension",
+        "hammer curl",
+        "triceps pressdown",
+        "lateral raise",
+        "face pull",
+        "bike",
+        "incline walk",
+    }
+
+    if name in always_common:
+        return False
+
+    technical_keywords = [
+        "car",
+        "cars",
+        "pails",
+        "rails",
+        "overcoming",
+        "isometric",
+        "mobility circuit",
+        "technical",
+        "footwork",
+        "shadow boxing",
+        "muay thai",
+        "defensive movement",
+        "combat base",
+        "open guard",
+        "deep squat breathing",
+        "positional breathing",
+        "foam roll",
+        "band-assisted",
+        "t-spine",
+        "thoracic",
+        "adductor",
+        "90/90",
+        "hip airplane",
+        "cossack",
+        "sled",
+        "bear crawl",
+        "neck",
+        "pigeon",
+    ]
+
+    combined = " ".join([name, method_tag, mobility_style, modality, prescription_type, session_slot])
+
+    if any(keyword in combined for keyword in technical_keywords):
+        return True
+
+    if prescription_type in {"mobility", "stretch", "cardio_skill", "isometric"}:
+        return True
+
+    if method_tag in {"mobility_control", "movement_prep", "overcoming_isometric", "yielding_isometric", "skill_conditioning"}:
+        return True
+
+    return False
+
+
+def build_how_to_content(exercise: dict) -> dict[str, list[str]]:
+    name = str(exercise.get("exercise_name", "Exercise"))
+    name_lower = name.lower()
+    method_tag = str(exercise.get("method_tag", "")).lower()
+    mobility_style = str(exercise.get("mobility_style", "")).lower()
+    modality = str(exercise.get("modality", "")).lower()
+    prescription_type = str(exercise.get("prescription_type", "")).lower()
+    coaching_cues = str(exercise.get("coaching_cues", "")).strip()
+    notes = str(exercise.get("notes", "")).strip()
+
+    setup = []
+    execution = []
+    avoid = []
+
+    if "pails" in name_lower or "rails" in name_lower or "pails" in mobility_style or "rails" in mobility_style:
+        setup = [
+            "Get into the listed stretch or end-range position gently.",
+            "Spend the first part of the hold breathing and settling into a pain-free range.",
+            "Use a conservative range. This should feel controlled, not forced.",
+        ]
+        execution = [
+            "PAILs: gradually push the stretched tissue into the floor, wall, band, or imagined barrier.",
+            "Ramp effort slowly. Do not jump straight to max tension.",
+            "RAILs: switch intent and use the opposite-side tissue to actively pull deeper into the new range.",
+            "After the contraction, breathe and own the new range for a few seconds before exiting.",
+        ]
+        avoid = [
+            "Do not chase pain, numbness, pinching, or sharp sensation.",
+            "Do not use maximal effort the first time you try it.",
+            "Do not collapse posture just to move farther.",
+        ]
+
+    elif "car" in name_lower or "cars" in name_lower or "cars" in mobility_style:
+        setup = [
+            "Set your body in a stable position so only the target joint is moving.",
+            "Brace lightly and keep the rest of your body quiet.",
+            "Use the biggest pain-free circle you can control.",
+        ]
+        execution = [
+            "Move slowly through the full circle.",
+            "Try to explore the edges of your usable range without compensating.",
+            "Perform the prescribed reps in both directions if the exercise allows it.",
+        ]
+        avoid = [
+            "Do not rush the circle.",
+            "Do not twist your trunk, shrug, or shift your hips to fake more range.",
+            "Avoid painful pinching or grinding.",
+        ]
+
+    elif "overcoming" in name_lower or method_tag == "overcoming_isometric":
+        setup = [
+            "Set up against an immovable object, pins, straps, wall, or fixed implement.",
+            "Find a strong joint angle where you can create force safely.",
+            "Brace before you start pushing or pulling.",
+        ]
+        execution = [
+            "Ramp force quickly but smoothly into the immovable object.",
+            "Hold hard for the prescribed seconds.",
+            "Rest fully between efforts so each rep has high intent.",
+        ]
+        avoid = [
+            "Do not jerk into the contraction.",
+            "Do not let your position change during the hold.",
+            "Avoid maximal intent if you feel beat up, under-recovered, or unsure of the setup.",
+        ]
+
+    elif method_tag == "yielding_isometric" or "isometric" in name_lower:
+        setup = [
+            "Get into the listed position and establish clean alignment.",
+            "Brace lightly and make sure the position is pain-free.",
+            "Choose a position you can hold without shaking apart immediately.",
+        ]
+        execution = [
+            "Hold the position for the prescribed time.",
+            "Breathe behind the brace rather than holding your breath the whole time.",
+            "Keep tension steady and controlled.",
+        ]
+        avoid = [
+            "Do not compensate by arching, shrugging, twisting, or collapsing.",
+            "Do not turn a low-intensity recovery drill into a max-effort strain.",
+        ]
+
+    elif "shadow boxing" in name_lower:
+        setup = [
+            "Use open space and start in stance.",
+            "Keep intensity light enough that your technique stays clean.",
+            "Pick one focus: stance, jab, defense, rhythm, exits, or balance.",
+        ]
+        execution = [
+            "Move in rounds. Keep your guard honest and return to stance after combinations.",
+            "Throw smooth punches and add slips, rolls, pivots, or exits.",
+            "Breathe rhythmically and stay relaxed.",
+        ]
+        avoid = [
+            "Do not turn this into hard sparring with the air.",
+            "Do not throw wild power shots or lose your feet.",
+            "Avoid sloppy fatigue reps.",
+        ]
+
+    elif "muay thai" in name_lower or "footwork" in name_lower or "defensive movement" in name_lower:
+        setup = [
+            "Start in stance with enough space to move safely.",
+            "Choose a light technical theme: step-outs, pivots, checks, teeps, angle exits, or stance recovery.",
+            "Keep the work smooth and repeatable.",
+        ]
+        execution = [
+            "Move in relaxed rounds at the prescribed RPE.",
+            "Reset stance after every movement.",
+            "Keep your eyes up, base under you, and breathing under control.",
+        ]
+        avoid = [
+            "Do not cross your feet or rush the drill.",
+            "Do not turn technical cardio into a conditioning test unless the app prescribed that.",
+            "Avoid sloppy kicks or pivots on sticky flooring.",
+        ]
+
+    elif "mobility circuit" in modality or "combat base" in name_lower or "open guard" in name_lower:
+        setup = [
+            "Clear enough floor space to move between positions.",
+            "Move slowly at first and treat each position like skill practice.",
+            "Stay within controllable range.",
+        ]
+        execution = [
+            "Flow through the listed positions with control.",
+            "Pause briefly in tight positions and breathe.",
+            "Prioritize smooth transitions over speed.",
+        ]
+        avoid = [
+            "Do not force end ranges.",
+            "Do not bounce through tight joints.",
+            "Do not let the drill become random movement with no control.",
+        ]
+
+    elif "foam roll" in name_lower:
+        setup = [
+            "Place the target tissue on the roller or ball with mild to moderate pressure.",
+            "Support your body so you can control the pressure.",
+            "Start with slow breathing.",
+        ]
+        execution = [
+            "Move slowly over the target area.",
+            "Pause on tight spots and breathe for a few seconds.",
+            "If prescribed, add small joint movements while staying relaxed.",
+        ]
+        avoid = [
+            "Do not grind aggressively.",
+            "Do not roll directly on sharp pain, joints, or irritated tissue.",
+            "Do not hold your breath.",
+        ]
+
+    elif "band-assisted" in name_lower:
+        setup = [
+            "Anchor the band securely.",
+            "Create gentle traction, not a violent pull.",
+            "Position your body so the band helps you find a stretch without joint irritation.",
+        ]
+        execution = [
+            "Ease into the stretch and breathe slowly.",
+            "Adjust distance from the anchor to change intensity.",
+            "Hold the prescribed time with relaxed control.",
+        ]
+        avoid = [
+            "Do not let the band yank the joint.",
+            "Avoid numbness, tingling, pinching, or sharp pain.",
+            "Do not force range just because the band allows it.",
+        ]
+
+    elif "neck" in name_lower:
+        setup = [
+            "Use a comfortable position and start with very low pressure.",
+            "Keep jaw relaxed and shoulders down.",
+            "Move or press only through pain-free range.",
+        ]
+        execution = [
+            "Apply gentle controlled pressure in the prescribed direction.",
+            "Build intensity gradually.",
+            "Keep the neck long and avoid aggressive strain.",
+        ]
+        avoid = [
+            "Do not crank the neck.",
+            "Do not use maximal effort on recovery days.",
+            "Stop if you feel dizziness, nerve symptoms, sharp pain, or headache pressure.",
+        ]
+
+    elif "sled" in name_lower:
+        setup = [
+            "Load the sled conservatively enough that speed and posture stay clean.",
+            "Set your torso angle and brace before driving.",
+            "Use a clear lane.",
+        ]
+        execution = [
+            "Drive through the floor with powerful steps.",
+            "Keep the torso angle consistent.",
+            "Stop each rep before your mechanics fall apart.",
+        ]
+        avoid = [
+            "Do not let the hips shoot up and posture collapse.",
+            "Do not turn every sled session into a max-effort conditioning test.",
+        ]
+
+    elif "bear crawl" in name_lower:
+        setup = [
+            "Start on hands and feet with knees hovering close to the floor.",
+            "Brace lightly and keep the back flat.",
+            "Move in open floor space.",
+        ]
+        execution = [
+            "Move opposite hand and foot together.",
+            "Keep hips low and steps quiet.",
+            "Use the prescribed time or distance.",
+        ]
+        avoid = [
+            "Do not let hips hike up.",
+            "Do not rush so much that coordination breaks down.",
+            "Stop if wrists or shoulders feel irritated.",
+        ]
+
+    elif prescription_type in {"mobility", "stretch"}:
+        setup = [
+            "Get into the listed position gradually.",
+            "Find a range that feels useful but not painful.",
+            "Breathe slowly before increasing intensity.",
+        ]
+        execution = [
+            "Follow the prescribed time, reps, or rounds.",
+            "Move with control and own the range.",
+            "Keep the target area doing the work instead of compensating elsewhere.",
+        ]
+        avoid = [
+            "Do not force painful range.",
+            "Do not bounce aggressively.",
+            "Do not sacrifice position just to go farther.",
+        ]
+
+    elif prescription_type == "cardio_skill":
+        setup = [
+            "Use enough space to move safely.",
+            "Pick a technical theme and keep the intensity controlled.",
+            "Start relaxed and build rhythm.",
+        ]
+        execution = [
+            "Work for the prescribed rounds or duration.",
+            "Prioritize stance, balance, rhythm, and clean mechanics.",
+            "Keep breathing under control.",
+        ]
+        avoid = [
+            "Do not turn technical work into sloppy conditioning.",
+            "Do not chase speed at the expense of position.",
+        ]
+
+    else:
+        setup = [
+            "Set up the exercise according to the listed equipment and prescription.",
+            "Use a conservative first set if the movement is unfamiliar.",
+        ]
+        execution = [
+            "Follow the prescribed sets, reps, time, or RPE.",
+            "Prioritize clean technique over load or speed.",
+        ]
+        avoid = [
+            "Do not push through sharp pain.",
+            "Do not increase intensity until the movement feels controlled.",
+        ]
+
+    if coaching_cues:
+        execution.append(coaching_cues)
+
+    if notes:
+        setup.append(notes)
+
+    return {
+        "Setup": setup,
+        "Execution": execution,
+        "Avoid": avoid,
+    }
+
+
+def render_how_to_expander(exercise: dict, index: int) -> None:
+    if not exercise_needs_how_to(exercise):
+        return
+
+    content = build_how_to_content(exercise)
+    exercise_name = exercise.get("exercise_name", "Exercise")
+
+    with st.expander(f"How to do this: {exercise_name}", expanded=False):
+        st.markdown('<div class="how-to-shell">', unsafe_allow_html=True)
+
+        for section_title, bullets in content.items():
+            st.markdown(
+                f"<div class='how-to-section-title'>{section_title}</div>",
+                unsafe_allow_html=True,
+            )
+            for bullet in bullets:
+                st.markdown(f"<div class='how-to-text'>• {bullet}</div>", unsafe_allow_html=True)
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def compact_exercise_card(exercise: dict, index: int) -> None:
@@ -596,6 +1030,7 @@ def compact_exercise_card(exercise: dict, index: int) -> None:
     }
 
     border_color = border_color_map.get(str(category), "#00F5D4")
+    technical_chip = "<span class='tech-chip'>How-to available</span>" if exercise_needs_how_to(exercise) else ""
 
     st.markdown(
         f"""
@@ -607,6 +1042,7 @@ def compact_exercise_card(exercise: dict, index: int) -> None:
     st.markdown(
         f"""
         <span class="prescription-chip">{prescription}</span>
+        {technical_chip}
         <div class="small-label">{exercise.get("movement_pattern", "movement")} · {category_label}</div>
         <h3>{index}. {exercise.get("exercise_name", "Exercise")}</h3>
         """,
@@ -627,6 +1063,8 @@ def compact_exercise_card(exercise: dict, index: int) -> None:
         st.write(notes)
 
     st.markdown("</div>", unsafe_allow_html=True)
+
+    render_how_to_expander(exercise, index)
 
 
 def action_panel_start() -> None:
