@@ -6,7 +6,7 @@ from src.database import read_table
 
 
 def get_all_data() -> Dict[str, pd.DataFrame]:
-    """Load all major app tables into DataFrames."""
+    """Load all major app tables into DataFrames for the active profile."""
     tables = [
         "daily_checkins",
         "workout_sessions",
@@ -132,7 +132,10 @@ def calculate_weekly_volume() -> pd.DataFrame:
     merged = sets.merge(sessions, on="workout_id", how="left")
 
     if not planned.empty:
-        planned_patterns = planned[["workout_id", "exercise_name", "movement_pattern"]]
+        planned_patterns = planned[
+            ["workout_id", "exercise_name", "movement_pattern"]
+        ].drop_duplicates(subset=["workout_id", "exercise_name"])
+
         merged = merged.merge(
             planned_patterns,
             on=["workout_id", "exercise_name"],
@@ -141,6 +144,10 @@ def calculate_weekly_volume() -> pd.DataFrame:
     else:
         merged["movement_pattern"] = "unknown"
 
+    if "movement_pattern" not in merged.columns:
+        merged["movement_pattern"] = "unknown"
+
+    merged["movement_pattern"] = merged["movement_pattern"].fillna("unknown")
     merged["week"] = merged["date"].dt.to_period("W").astype(str)
 
     weekly = (
