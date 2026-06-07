@@ -22,6 +22,9 @@ from src.ui import (
     readiness_panel,
     compact_exercise_card,
     step_navigation,
+    workout_intelligence_summary,
+    workout_training_logic_expander,
+    exercise_intelligence_panel,
 )
 
 
@@ -134,6 +137,7 @@ def replace_exercise(exercise_index: int, substitution_type: str) -> None:
     )
 
     workout["exercises"][exercise_index - 1] = replacement
+    workout["estimated_fatigue"] = sum(int(item.get("fatigue_points", 3)) for item in workout["exercises"])
     st.session_state["latest_workout"] = workout
     clear_set_state_for_exercise(exercise_index)
 
@@ -326,7 +330,6 @@ if active_step == 1:
         checkin_for_generator["session_type"] = session_type
 
         checkin_id = insert_checkin(checkin)
-
         workout = generate_workout(checkin_for_generator)
 
         workout_id = insert_workout_session(
@@ -380,42 +383,15 @@ elif active_step == 2:
         if workout.get("deload"):
             st.warning("Scheduled deload logic is active for this workout.")
 
-        st.subheader("Workout Overview")
-
-        col_a, col_b, col_c, col_d = st.columns(4)
-
-        with col_a:
-            st.metric("Workout Type", workout["workout_type"])
-
-        with col_b:
-            st.metric("Focus", workout["focus"])
-
-        with col_c:
-            st.metric("Duration", f"{workout['estimated_duration']} min")
-
-        with col_d:
-            st.metric("Fatigue", f"{workout.get('estimated_fatigue', 0)} / {workout.get('fatigue_budget', '—')}")
-
-        st.info(workout["generation_reason"])
-
-        st.caption(
-            f"Session: {workout.get('session_type', 'Main Workout')} | "
-            f"Template bias: {workout.get('template_key', 'balanced')} | "
-            f"Modifier: {workout.get('workout_modifier', 'normal')}"
-        )
+        workout_intelligence_summary(workout, checkin)
+        workout_training_logic_expander(workout, checkin)
 
         st.divider()
-
         st.subheader("Workout Plan")
 
         for index, exercise_item in enumerate(workout["exercises"], start=1):
             compact_exercise_card(exercise_item, index)
-
-            if exercise_item.get("selected_for_slot"):
-                st.caption(f"Selected for: {exercise_item.get('selected_for_slot')}")
-
-            if exercise_item.get("selection_reason"):
-                st.caption(exercise_item.get("selection_reason"))
+            exercise_intelligence_panel(exercise_item)
 
             sub_col1, sub_col2, sub_col3 = st.columns(3)
 
@@ -468,6 +444,7 @@ elif active_step == 2:
                 "selection_score",
                 "equipment",
                 "modality",
+                "selection_reason",
                 "notes",
             ]
 
