@@ -153,6 +153,8 @@ def init_db() -> None:
     conn.commit()
     conn.close()
 
+    seed_personalization_defaults()
+
 
 def seed_setting(key: str, value: Any) -> None:
     conn = get_connection()
@@ -186,6 +188,77 @@ def get_setting(key: str, default: Optional[Any] = None) -> Any:
     row = conn.execute("SELECT value FROM settings WHERE key = ?;", (key,)).fetchone()
     conn.close()
     return row["value"] if row else default
+
+
+def parse_csv_setting(value: Any) -> list[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    text = str(value).strip()
+
+    if not text:
+        return []
+
+    return [item.strip() for item in text.split(",") if item.strip()]
+
+
+def csv_from_list(values: list[str]) -> str:
+    return ",".join([str(value).strip() for value in values if str(value).strip()])
+
+
+def seed_personalization_defaults() -> None:
+    defaults = {
+        "preferred_equipment": "barbell,dumbbells,cable,machine,bodyweight,trap bar,landmine,pull-up bar,bands,foam roller",
+        "avoided_exercises": "",
+        "favorite_exercises": "",
+        "mobility_priorities": "hips,t-spine,shoulders",
+        "cardio_preference": "Mixed",
+        "strength_method_preference": "App decides",
+        "max_session_fatigue_preference": "0",
+        "exercise_variety_preference": "Balanced",
+    }
+
+    for key, value in defaults.items():
+        seed_setting(key, value)
+
+
+def get_personalization_settings() -> dict[str, Any]:
+    return {
+        "preferred_equipment": parse_csv_setting(
+            get_setting(
+                "preferred_equipment",
+                "barbell,dumbbells,cable,machine,bodyweight,trap bar,landmine,pull-up bar,bands,foam roller",
+            )
+        ),
+        "avoided_exercises": parse_csv_setting(get_setting("avoided_exercises", "")),
+        "favorite_exercises": parse_csv_setting(get_setting("favorite_exercises", "")),
+        "mobility_priorities": parse_csv_setting(get_setting("mobility_priorities", "hips,t-spine,shoulders")),
+        "cardio_preference": get_setting("cardio_preference", "Mixed"),
+        "strength_method_preference": get_setting("strength_method_preference", "App decides"),
+        "max_session_fatigue_preference": int(float(get_setting("max_session_fatigue_preference", 0) or 0)),
+        "exercise_variety_preference": get_setting("exercise_variety_preference", "Balanced"),
+    }
+
+
+def save_personalization_settings(settings: dict[str, Any]) -> None:
+    list_keys = {
+        "preferred_equipment",
+        "avoided_exercises",
+        "favorite_exercises",
+        "mobility_priorities",
+    }
+
+    for key, value in settings.items():
+        if key in list_keys:
+            if isinstance(value, list):
+                set_setting(key, csv_from_list(value))
+            else:
+                set_setting(key, str(value))
+        else:
+            set_setting(key, value)
 
 
 def insert_checkin(data: dict[str, Any]) -> int:
@@ -503,6 +576,8 @@ def reset_database() -> None:
     conn.close()
 
     init_db()
+
+
 def delete_workout(workout_id: int) -> None:
     conn = get_connection()
     cursor = conn.cursor()
