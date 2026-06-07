@@ -105,6 +105,48 @@ def inject_global_styles() -> None:
             letter-spacing: 0.02em;
         }
 
+        .mini-stat-card {
+            background:
+                radial-gradient(circle at top right, rgba(0,245,212,0.10), transparent 38%),
+                linear-gradient(135deg, rgba(22,11,46,0.92), rgba(9,5,15,0.98));
+            border: 1px solid rgba(0,245,212,0.16);
+            border-radius: 20px;
+            padding: 1rem 1.1rem;
+            min-height: 112px;
+            box-shadow: 0 12px 32px rgba(0,0,0,0.22);
+            margin-bottom: 0.85rem;
+        }
+
+        .mini-stat-label {
+            color: rgba(216,180,254,0.82);
+            font-size: 0.76rem;
+            text-transform: uppercase;
+            letter-spacing: 0.09em;
+            font-weight: 900;
+            margin-bottom: 0.45rem;
+        }
+
+        .mini-stat-value {
+            color: #F8FAFC;
+            font-size: 1.65rem;
+            font-weight: 950;
+            line-height: 1.15;
+        }
+
+        .mini-stat-delta {
+            color: #00F5D4;
+            margin-top: 0.35rem;
+            font-size: 0.88rem;
+            font-weight: 800;
+        }
+
+        .mini-stat-help {
+            color: rgba(216,180,254,0.76);
+            margin-top: 0.4rem;
+            font-size: 0.82rem;
+            line-height: 1.35;
+        }
+
         .mission-card,
         .logic-card,
         .summary-card {
@@ -292,6 +334,14 @@ def inject_global_styles() -> None:
             .command-card h3 {
                 font-size: 1.3rem;
             }
+
+            .mini-stat-card {
+                min-height: auto;
+            }
+
+            .mini-stat-value {
+                font-size: 1.35rem;
+            }
         }
         </style>
         """,
@@ -303,6 +353,29 @@ def clean_label(value: str | int | float | None) -> str:
     if value in [None, ""]:
         return "—"
     return str(value).replace("_", " ").title()
+
+
+def mini_stat(
+    label: str,
+    value: str | int | float | None,
+    help_text: str | None = None,
+    delta: str | None = None,
+) -> None:
+    value_text = "—" if value in [None, ""] else str(value)
+    help_html = f"<div class='mini-stat-help'>{help_text}</div>" if help_text else ""
+    delta_html = f"<div class='mini-stat-delta'>{delta}</div>" if delta else ""
+
+    st.markdown(
+        f"""
+        <div class="mini-stat-card">
+            <div class="mini-stat-label">{label}</div>
+            <div class="mini-stat-value">{value_text}</div>
+            {delta_html}
+            {help_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def asset_to_base64(filename: str) -> str:
@@ -420,7 +493,7 @@ def mission_card(primary_goal: str, training_bias: str) -> None:
         <div class="mission-card">
             <div class="small-label">Current Mission</div>
             <p><b>Primary goal:</b> {primary_goal}</p>
-            <p><b>Training bias:</b> {training_bias}</p>
+            <p><b>Training bias:</b> {clean_label(training_bias)}</p>
             <p><b>Combat training:</b> Tuesday / Thursday / Friday / Sunday</p>
         </div>
         """,
