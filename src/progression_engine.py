@@ -1,8 +1,6 @@
 from datetime import datetime
 from typing import Any
 
-import pandas as pd
-
 from src.database import read_table, upsert_progression_state
 
 
@@ -11,6 +9,7 @@ MAIN_LIFTS = {
     "Squat",
     "Bench Press",
     "Weighted Pull-Up",
+    "Weighted Chin-Up",
 }
 
 
@@ -25,7 +24,7 @@ def get_load_jump(exercise_name: str) -> float:
     if exercise_name in {"Trap Bar Deadlift", "Squat"}:
         return 5.0
 
-    if exercise_name in {"Bench Press", "Weighted Pull-Up"}:
+    if exercise_name in {"Bench Press", "Weighted Pull-Up", "Weighted Chin-Up"}:
         return 2.5
 
     return 5.0
@@ -33,7 +32,7 @@ def get_load_jump(exercise_name: str) -> float:
 
 def update_progression_from_workout(workout_id: int, readiness_category: str) -> list[dict[str, Any]]:
     """
-    Conservative progression logic.
+    Conservative progression logic for the active profile.
 
     Main rules:
     - Green/Yellow days can update progression.
@@ -78,8 +77,12 @@ def update_progression_from_workout(workout_id: int, readiness_category: str) ->
         avg_rpe = exercise_sets["rpe"].mean()
 
         best_e1rm = 0.0
+
         for _, set_row in exercise_sets.iterrows():
-            set_e1rm = estimate_1rm(float(set_row["weight"] or 0), int(set_row["reps"] or 0))
+            set_e1rm = estimate_1rm(
+                float(set_row["weight"] or 0),
+                int(set_row["reps"] or 0),
+            )
             best_e1rm = max(best_e1rm, set_e1rm)
 
         state_match = current_state[current_state["exercise_name"] == exercise_name]
@@ -108,9 +111,7 @@ def update_progression_from_workout(workout_id: int, readiness_category: str) ->
             )
 
             high_quality = completed_prescription and max_rpe <= target_rpe
-
             completed_but_too_hard = completed_prescription and max_rpe > target_rpe
-
             missed_reps = not completed_prescription
 
             if high_quality:
